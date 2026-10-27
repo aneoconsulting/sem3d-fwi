@@ -12,6 +12,7 @@ dependencies = ["numpy", "h5py"]
 [project.optional-dependencies]
 examples = ["matplotlib"]
 test = ["pytest"]
+armonik = ["armonik==3.29.3"]
 
 [tool.setuptools]
 packages = ["semfwi"]

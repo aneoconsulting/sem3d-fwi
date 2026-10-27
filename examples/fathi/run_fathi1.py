@@ -60,8 +60,7 @@ def main():
         pb = Problem(cfg, runner, dobs, lam0, mu0, rho, pml=(lam0, mu0, rho))
         x0 = np.zeros(pb.size)
         t0 = time.time()
-        J0, u0 = pb.forward(x0, "x0")
-        g = pb.gradient(x0, "x0", u0)
+        J0, _, g = pb.evaluate(x0, "x0")
         print(f"{pn}: J0 = {J0:.6e}, gradient in {time.time() - t0:.0f} s", flush=True)
         np.save(f"{cfg.workdir}/g0.npy", g)
         X, Y, Z = cfg.grid.mesh()
@@ -75,7 +74,7 @@ def main():
             for h in (1e-3, 1e-4, 1e-5):
                 x = x0.copy()
                 x[j] = h
-                Jh, _ = pb.forward(x, f"fd_{par}_{node[2]:g}_{h:g}", save_strain=False)
+                Jh, _, _ = pb.evaluate(x, f"fd_{par}_{node[2]:g}_{h:g}", grad=False)
                 row["dfdh"][f"{h:g}"] = (Jh - J0) / h
             print(f"  {pn} {node} {row['param']:6s} dco = {row['dco']:+.6e}; dfdh: "
                   + "  ".join(f"h={h}: {v:+.6e}" for h, v in row["dfdh"].items()), flush=True)

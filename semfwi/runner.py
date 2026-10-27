@@ -64,14 +64,19 @@ class Runner:
         shutil.copy(f"{self.mesh_dir}/material.input", d)
 
     @staticmethod
-    def input_hash(d):
+    def input_files(d):
+        """Files defining the simulation in d, excluding the mesh: inputs, model, sources."""
+        return [fn for fn in sorted(os.listdir(d))
+                if fn in INPUT_FILES or fn == "material.input"
+                or (fn[0] in "aks" and fn.endswith((".txt", ".h5")))]
+
+    @classmethod
+    def input_hash(cls, d):
         h = hashlib.sha1()
-        for fn in sorted(os.listdir(d)):
-            if (fn in INPUT_FILES or fn == "material.input"
-                    or (fn[0] in "aks" and fn.endswith((".txt", ".h5")))):
-                h.update(fn.encode())
-                with open(f"{d}/{fn}", "rb") as f:
-                    h.update(f.read())
+        for fn in cls.input_files(d):
+            h.update(fn.encode())
+            with open(f"{d}/{fn}", "rb") as f:
+                h.update(f.read())
         return h.hexdigest()
 
     def is_done(self, d, h):

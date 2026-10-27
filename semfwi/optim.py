@@ -1,7 +1,9 @@
 """L-BFGS with Armijo line search (backtracking by quadratic interpolation).
 
-Each line-search trial is a forward simulation that saves the strains: the accepted trial
-is used directly for the next gradient computation, rejected trials are deleted.
+Each line-search trial computes J and the gradient (speculative gradient): the accepted trial,
+usually the first one, costs two simulations per source, like a gradient computation;
+a rejected trial costs two instead of one. Per-source evaluations are thus independent and
+complete, which allows handing them to a remote backend (ArmoniK) without keeping strains there.
 The state is saved at each iteration (workdir/state.npz and history.json) so it can be resumed.
 """
 import json
@@ -64,8 +66,7 @@ def minimize(problem, x0, niter, workdir, step0=0.02, c1=1e-4, max_trials=6, m=5
     else:
         t0 = time.time()
         x = x0.copy()
-        J, u = problem.forward(x, "it000")
-        g = problem.gradient(x, "it000", u)
+        J, _, g = problem.evaluate(x, "it000")
         it0 = 1
         history = [dict(it=0, J=J, alpha=0., trials=0, time=time.time() - t0)]
         if callback:
@@ -87,24 +88,21 @@ def minimize(problem, x0, niter, workdir, step0=0.02, c1=1e-4, max_trials=6, m=5
             tag = f"it{it:03d}_t{trial}"
             xt = x + alpha * p
             try:
-                Jt, ut = problem.forward(xt, tag)
+                Jt, _, gt = problem.evaluate(xt, tag)
             except (SimulationError, ValueError) as e:
                 log(f"  trial {trial} alpha = {alpha:.3e}: failed ({e})")
-                problem.drop_strain(tag)
                 alpha *= 0.5
                 continue
             log(f"  trial {trial} alpha = {alpha:.3e} J = {Jt:.6e} (Armijo: {J + c1 * alpha * gp:.6e})")
             if Jt <= J + c1 * alpha * gp:
                 accepted = True
                 break
-            problem.drop_strain(tag)
             # minimum of the parabola through J, J'(0) = gp and Jt, clamped to [0.1 alpha, 0.5 alpha]
             a_q = -gp * alpha ** 2 / (2 * (Jt - J - gp * alpha))
             alpha = min(max(a_q, 0.1 * alpha), 0.5 * alpha)
         if not accepted:
             log(f"iteration {it}: line search failed, stopping")
             break
-        gt = problem.gradient(xt, tag, ut)
         opt.update(xt - x, gt - g)
         x, J, g = xt, Jt, gt
         history.append(dict(it=it, J=J, alpha=alpha, trials=trial + 1, time=time.time() - t0))

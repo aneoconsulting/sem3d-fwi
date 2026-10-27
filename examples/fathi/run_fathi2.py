@@ -140,8 +140,7 @@ def main():
             print(f"  resuming at iteration {it_global} without re-simulating ({len(opt.s)} L-BFGS pairs)", flush=True)
         else:
             tag = f"it{it_global:03d}_start"
-            J, u = pb.forward(x, tag)
-            gmis = pb.gradient(x, tag, u)
+            J, _, gmis = pb.evaluate(x, tag)
             if done_in_stage == 0:
                 record(0, J, 0., 0., 0, time.time() - t0, gmis)
         saved = {}
@@ -173,10 +172,9 @@ def main():
                     tag = f"it{it_global:03d}_t{trial}"
                     xt = x + alpha * p
                     try:
-                        Jm, ut = pb.forward(xt, tag)
+                        Jm, _, gmis_t = pb.evaluate(xt, tag)
                     except (SimulationError, ValueError) as e:
                         print(f"  trial {trial} alpha={alpha:.3e} failed ({e})", flush=True)
-                        pb.drop_strain(tag)
                         alpha *= 0.5
                         continue
                     Jt = Jm + R * reg.value(xt)
@@ -185,7 +183,6 @@ def main():
                     if Jt <= Jt0 + 1e-4 * alpha * gp:
                         accepted = True
                         break
-                    pb.drop_strain(tag)
                     a_q = -gp * alpha ** 2 / (2 * (Jt - Jt0 - gp * alpha))
                     alpha = min(max(a_q, 0.1 * alpha), 0.5 * alpha)
                 if accepted or trial0 > 0 or plain:
@@ -198,7 +195,6 @@ def main():
             if not accepted:
                 print(f"line search failed at iteration {it_global}", flush=True)
                 break
-            gmis_t = pb.gradient(xt, tag, ut)
             opt.update(xt - x, (gmis_t + R * reg.grad(xt)) - g)
             x, J, gmis = xt, Jm, gmis_t
             record(k, J, R, alpha, trial + 1, time.time() - t0, gmis)

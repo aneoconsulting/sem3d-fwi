@@ -146,3 +146,105 @@ def test_chain_rule(param):
     fd = (J(x + h * dx) - J(x - h * dx)) / (2 * h)
     assert np.isclose(gx @ dx, fd, rtol=1e-6)
     assert np.allclose(pb.to_x(lam, mu), x)
+
+
+def test_config_roundtrip():
+    from semfwi import config
+    cfg = Config(workdir="/a", stations=[(1., 2., 0.)], layers=[(100., 2), (300., 6)], adjoint="extended",
+                 receiver_grid=(np.array([0., 50.]), np.array([0., 50.]), 0.), nprocs=2,
+                 sources=[sem_io.point_source((1., 2., 3.), (0., 0., 1.))])
+    d = config.to_dict(cfg)
+    import json
+    back = config.from_dict(json.loads(json.dumps(d)), "/b", sem3d_bin="/bin")
+    assert back.workdir == "/b" and back.sources == [] and back.sem3d_bin == "/bin"
+    assert back.grid == cfg.grid and back.nt == cfg.nt and back.layer_list == [[100., 2], [300., 6]]
+    assert config.to_dict(back) == d
+
+
+def test_armonik_io_roundtrip(tmp_path):
+    from semfwi import armonik_io
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.txt").write_text("x")
+    (tmp_path / "a" / "y.h5").write_bytes(b"\0\1")
+    armonik_io.unpack(armonik_io.pack_tree(tmp_path / "a"), tmp_path / "b")
+    assert (tmp_path / "b" / "x.txt").read_text() == "x" and (tmp_path / "b" / "y.h5").read_bytes() == b"\0\1"
+    a = RNG.standard_normal((3, 4, 3))
+    assert np.array_equal(armonik_io.decode_array(armonik_io.encode_array(a)), a)
+    r = armonik_io.decode_result(armonik_io.encode_result(dict(u=a, gl=a[0])))
+    assert np.array_equal(r["u"], a) and np.array_equal(r["gl"], a[0])
+
+
+class _FakeRunner:
+    """Prepares directories without a mesh; input_hash as in Runner."""
+    input_hash = Runner.input_hash
+    input_files = Runner.input_files
+
+    def prepare(self, d):
+        os.makedirs(d, exist_ok=True)
+
+
+class _FakeBackend:
+    """u = sum of the Mu model read from the forward directory; gl = gm = 1."""
+    def __init__(self, cfg):
+        self.cfg, self.calls = cfg, []
+
+    def run(self, jobs):
+        self.calls.append([(j.index, j.grad) for j in jobs])
+        out = []
+        for j in jobs:
+            _, mu, _ = model.read_model(j.fwd)
+            r = dict(u=np.full((len(self.cfg.stations), self.cfg.nt, 3), mu.sum() * 1e-12 + j.index))
+            if j.grad:
+                r.update(gl=np.ones(self.cfg.grid.shape), gm=np.ones(self.cfg.grid.shape))
+            out.append(r)
+        return out
+
+
+def test_evaluate_cache(tmp_path):
+    """evaluate resubmits only the sources whose inputs have changed."""
+    from semfwi.problem import Problem
+    cfg = Config(workdir=str(tmp_path), sim_time=0.01, stations=[(1., 2., 0.)],
+                 sources=[sem_io.point_source((1., 2., -3.), (0., 0., 1.), func="ricker", tau=0.1, freq=8.)] * 2)
+    one = np.ones(cfg.grid.shape)
+    be = _FakeBackend(cfg)
+    dobs = np.zeros((2, 1, cfg.nt, 3))
+    pb = Problem(cfg, _FakeRunner(), dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, backend=be)
+    x = np.zeros(pb.size)
+    J, u, g = pb.evaluate(x, "t")
+    assert be.calls == [[(0, True), (1, True)]] and g.shape == x.shape and pb.nsim == 4
+    J2, u2, g2 = pb.evaluate(x, "t")
+    assert be.calls[1:] == [] and J2 == J and np.array_equal(g2, g)
+    J3, _, g3 = pb.evaluate(x, "t", grad=False)          # input.spec changed (no strains)
+    assert be.calls[1:] == [[(0, False), (1, False)]] and g3 is None and J3 == J
+    pb.evaluate(x + 0.01, "t")                             # model changed
+    assert be.calls[2:] == [[(0, True), (1, True)]]
+
+
+@pytest.mark.sem3d
+@pytest.mark.skipif(not os.environ.get("SEM3D_BIN"), reason="SEM3D_BIN not set")
+def test_worker_compute_matches_local(tmp_path, monkeypatch):
+    """The ArmoniK worker path (archives, payload, cached mesh) gives the same result as
+    LocalBackend, without ArmoniK."""
+    import json
+    from semfwi import armonik_io, armonik_worker, config
+    from semfwi.backend import Job, LocalBackend
+    cfg = Config(workdir=str(tmp_path / "local"), sim_time=0.1, stations=[(262., 233., 0.), (121., 297., 0.)],
+                 sources=[sem_io.point_source((163., 181., -77.), (1., 0., 0.), func="ricker", tau=0.05,
+                                              freq=10.)])
+    runner = Runner(cfg)
+    d = str(tmp_path / "local" / "fwd")
+    runner.prepare(d)
+    one = np.ones(cfg.grid.shape)
+    model.write_model(d, cfg.grid, cfg.lam0 * one, cfg.mu0 * (one + 0.05), cfg.rho0 * one)
+    sem_io.write_input(d, cfg, cfg.sources, save_strain=True)
+    dobs = RNG.standard_normal((2, cfg.nt, 3)) * 1e-9
+    deps = {"m": armonik_io.pack_tree(os.path.realpath(f"{d}/sem")),
+            "i": armonik_io.pack(d, Runner.input_files(d)), "d": armonik_io.encode_array(dobs)}
+    payload = json.dumps(dict(version=1, cfg=config.to_dict(cfg), grad=True, mesh="m", inputs="i", dobs="d"))
+    monkeypatch.setattr(armonik_worker, "SCRATCH", str(tmp_path / "scratch"))
+    (tmp_path / "w").mkdir()
+    remote = armonik_io.decode_result(armonik_worker.compute(payload, deps, str(tmp_path / "w")))
+    local = LocalBackend(cfg, runner).run([Job(0, d, str(tmp_path / "local" / "adj"), dobs, True)])[0]
+    for k in ("u", "gl", "gm"):
+        assert np.array_equal(remote[k], local[k]), k
+    assert np.abs(local["gm"]).max() > 0

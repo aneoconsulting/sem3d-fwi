@@ -13,25 +13,25 @@ follows from the chain rule:
 pml: None (mesher properties), "follow" (the current model is extended into the PMLs, layer
 by layer, as in Fathi et al.) or a fixed (lam, mu, rho). The gradient ignores the dependence of the
 PMLs on the model (it is restricted to the interior domain, as in the paper).
+
+Run directories are prepared here; simulations and kernels are computed by the
+backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
 """
+import hashlib
 import os
-import shutil
-from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from . import gradient, misfit, model, sem_io
-
-
-def _kernels(args):
-    return gradient.kernels(*args)
+from . import misfit, model, sem_io
+from .backend import Job, LocalBackend
 
 
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
-                 fixed=None, pml=None):
+                 fixed=None, pml=None, backend=None):
         assert param in ("lame", "vel"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
+        self.backend = backend or LocalBackend(cfg, runner)
         self.active = tuple(active)
         self.lam_ref, self.mu_ref, self.rho_ref = lam_ref, mu_ref, rho_ref
         self.vp_ref = np.sqrt((lam_ref + 2 * mu_ref) / rho_ref)
@@ -113,58 +113,49 @@ class Problem:
         elif self.pml is not None:
             model.write_pml_materials(d, self.cfg, *self.pml)
 
-    def forward(self, x, tag, save_strain=True):
-        """J(x); the forward simulations of all sources are in workdir/tag/s*/fwd."""
+    def evaluate(self, x, tag, grad=True):
+        """J(x), traces u (nsrc, nsta, nt, 3) and grad J(x) (None if grad is false). The simulations
+        of source i are in workdir/tag/s{i}/fwd and adj; its result is kept there (result.npz)
+        so that a new evaluation with the same inputs does not rerun them."""
         lam, mu, rho = self.to_model(x)
         model.check_bounds(lam, mu, rho)
-        dirs = []
+        results = [None] * len(self.cfg.sources)
+        jobs, keys = [], []
         for i, src in enumerate(self.cfg.sources):
             d = self._dir(tag, i, "fwd")
             self.runner.prepare(d)
             self._write_model(d, lam, mu, rho)
-            sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]),
-                               save_strain=save_strain)
-            dirs.append(d)
-        self.runner.run_many(dirs)
-        self.nsim += len(dirs)
-        u = np.stack([sem_io.read_traces(d, len(self.cfg.stations)) for d in dirs])
-        return misfit.cost(u, self.dobs, self.cfg.dt), u
+            sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]), save_strain=grad)
+            key = self._key(d, i, grad)
+            results[i] = self._cached(tag, i, key)
+            if results[i] is None:
+                jobs.append(Job(i, d, self._dir(tag, i, "adj"), self.dobs[i], grad))
+                keys.append(key)
+        for job, key, r in zip(jobs, keys, self.backend.run(jobs) if jobs else []):
+            np.savez(self._result_fn(tag, job.index), key=key, **r)
+            results[job.index] = r
+        self.nsim += len(jobs) * (2 if grad else 1)
+        u = np.stack([r["u"] for r in results])
+        J = misfit.cost(u, self.dobs, self.cfg.dt)
+        if not grad:
+            return J, u, None
+        gl = sum(r["gl"] for r in results)
+        gm = sum(r["gm"] for r in results)
+        return J, u, self.chain(x, gl, gm)
 
-    def gradient(self, x, tag, u):
-        """grad J(x) after forward(x, tag) with the strains. The strains are then deleted;
-        dJ/dlambda and dJ/dmu are kept in workdir/tag/grad.npz."""
-        fn = os.path.join(self.cfg.workdir, tag, "grad.npz")
-        if os.path.exists(fn):
-            st = np.load(fn)
-            return self.chain(x, st["gl"], st["gm"])
-        lam, mu, rho = self.to_model(x)
-        jobs = []
-        dirs = []
-        for i in range(len(self.cfg.sources)):
-            d = self._dir(tag, i, "adj")
-            self.runner.prepare(d)
-            self._write_model(d, lam, mu, rho)
-            tau, hist = misfit.adjoint_history(misfit.residual(u[i], self.dobs[i]), self.cfg.dt)
-            srcs = sem_io.write_adjoint_sources(d, self.cfg, tau, hist)
-            sem_io.write_input(d, self.cfg, srcs, save_strain=True)
-            dirs.append(d)
-            for r in range(self.cfg.nprocs):
-                jobs.append((self.cfg.grid, self._dir(tag, i, "fwd"), d, self.cfg.dt, 3e7, [r]))
-        self.runner.run_many(dirs)
-        self.nsim += len(dirs)
-        gl = np.zeros(self.cfg.grid.shape)
-        gm = np.zeros(self.cfg.grid.shape)
-        with ProcessPoolExecutor(max_workers=max(1, min(4, len(jobs)))) as ex:
-            for kl, km in ex.map(_kernels, jobs):
-                gl += kl
-                gm += km
-        np.savez(fn, gl=gl, gm=gm)
-        self.drop_strain(tag)
-        return self.chain(x, gl, gm)
+    def _result_fn(self, tag, i):
+        return os.path.join(self.cfg.workdir, tag, f"s{i}", "result.npz")
 
-    def drop_strain(self, tag):
-        """Strains take several GB per simulation."""
-        root = os.path.join(self.cfg.workdir, tag)
-        for i in range(len(self.cfg.sources)):
-            for kind in ("fwd", "adj"):
-                shutil.rmtree(os.path.join(root, f"s{i}", kind, "strain"), ignore_errors=True)
+    def _key(self, dfwd, i, grad):
+        """Fingerprint of the inputs of source i: forward directory, plus data if grad."""
+        h = hashlib.sha1(self.runner.input_hash(dfwd).encode())
+        if grad:
+            h.update(np.ascontiguousarray(self.dobs[i]).tobytes())
+        return h.hexdigest()
+
+    def _cached(self, tag, i, key):
+        try:
+            st = np.load(self._result_fn(tag, i))
+        except FileNotFoundError:
+            return None
+        return {k: st[k] for k in st.files if k != "key"} if str(st["key"]) == key else None

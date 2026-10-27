@@ -1,4 +1,5 @@
 """Parameters of an inversion case."""
+import dataclasses
 import os
 from dataclasses import dataclass, field
 import numpy as np
@@ -82,3 +83,33 @@ class Config:
                 return i
             top -= th
         return len(self.layer_list) - 1
+
+
+# Fields specific to the client machine, left out of the serializable form
+LOCAL_FIELDS = ("workdir", "sources", "sem3d_bin")
+
+
+def _plain(v):
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, np.generic):
+        return v.item()
+    return v
+
+
+def to_dict(cfg):
+    """Config without the local fields (workdir, sources, sem3d_bin), as JSON types."""
+    out = {f.name: _plain(getattr(cfg, f.name)) for f in dataclasses.fields(cfg) if f.name not in LOCAL_FIELDS}
+    out["grid"] = {f.name: _plain(getattr(cfg.grid, f.name)) for f in dataclasses.fields(cfg.grid)}
+    return out
+
+
+def from_dict(d, workdir, sem3d_bin=None):
+    """Inverse of to_dict; sources stay empty (they are already written in the inputs)."""
+    d = dict(d)
+    g = d.pop("grid")
+    grid = Grid(xmin=tuple(g["xmin"]), h=g["h"], n=tuple(g["n"]))
+    kw = dict(sem3d_bin=sem3d_bin) if sem3d_bin is not None else {}
+    return Config(workdir=workdir, grid=grid, **d, **kw)

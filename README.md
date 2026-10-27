@@ -52,12 +52,21 @@ export HDF5_LIB=~/install/hdf5-1.14/lib
 | `runner`   | single mesh, launching simulations, cache, parallel execution |
 | `misfit`   | residuals, misfit function, adjoint source time histories |
 | `gradient` | K_lambda and K_mu kernels and projection onto the parameter grid |
-| `problem`  | J(x) and grad J(x) over all sources |
+| `task`     | one source end to end: forward, residual, adjoint, kernels |
+| `backend`  | source execution: `LocalBackend` (local machine) |
+| `problem`  | J(x) and grad J(x) over all sources (`Problem.evaluate`) |
 | `optim`    | L-BFGS with Armijo line search, checkpoint and restart |
+| `armonik_*`| ArmoniK backend (client), worker and the contract between them |
 
 For each source, a gradient evaluation runs a forward simulation (traces and strains),
 then an adjoint simulation whose sources are the time-reversed residuals; the kernels are
-the correlation of the strains of the two simulations.
+the correlation of the strains of the two simulations. Each source is an independent unit
+of work (`task.run_source`) from which only the traces and the kernels on the grid come
+out; the strains stay in its run directory. `Problem.evaluate(x, tag, grad=True)` keeps
+the result of each source (`tag/s*/result.npz`) and only resubmits the sources whose
+inputs have changed. Each line-search trial also computes the gradient (speculative
+gradient): the accepted trial costs two simulations per source, a rejected trial two
+instead of one.
 
 ## Examples
 
@@ -74,6 +83,47 @@ the correlation of the strains of the two simulations.
   python examples/fathi/run_fathi2.py mu|lambda|both [--stages p20:20 p30:10] [--bias 15]
   python examples/fathi/export_fathi.py                        # results -> summary.json
   ```
+
+## ArmoniK
+
+With `ArmoniKBackend`, each source becomes an
+[ArmoniK](https://github.com/aneoconsulting/ArmoniK.Core) task run by the
+`semfwi.armonik_worker` worker. The client prepares the run directories as it does locally
+(mesh included, so it needs SEM3D); it sends the mesh once per session, then, for each task,
+the input files of the forward directory and the data. In return, it receives the traces
+and the kernels. The contract is described in `semfwi/armonik_io.py`.
+
+Worker image (Amazon Linux 2023, parallel HDF5 1.14, OpenMPI, SEM3D, semfwi):
+
+```
+pip install -e '.[armonik]'           # client
+docker/build.sh [--test]              # semfwi_worker:0.1.0; --test runs pytest in the image
+```
+
+SEM3D is compiled there from a copy (`git archive`) of `SEM_SRC` (default `~/SEM`) at
+revision `SEM_REF` (default `adjoint`).
+
+Local deployment with ArmoniK.Core (4 agent + worker pairs, one `TestPartition0` partition):
+
+```
+cd ../ArmoniK.Core
+WORKER_IMAGE=semfwi_worker:0.1.0 just tag=0.0.0.0-local replicas=4 partitions=1 \
+  grafana=false prometheus=false seq=false deploy
+```
+
+Do not use `just build-deploy`: it would rebuild `WORKER_IMAGE` with the Dockerfile of
+ArmoniK's test worker.
+
+Usage:
+
+```
+export ARMONIK_ENDPOINT=http://localhost:5001 ARMONIK_PARTITION=TestPartition0
+python examples/synth/run_synth.py --backend armonik [--taylor | --niter 2]
+```
+
+In a script: `Problem(..., backend=ArmoniKBackend(cfg))`, then `backend.close()`, which closes
+the session. A SEM3D failure in a task is raised as `SimulationError`, with the end of
+`sem3d.log`.
 
 ## Tests
 
