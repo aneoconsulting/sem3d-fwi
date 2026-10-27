@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semfwi"
+version = "0.1.0"
+description = "Adjoint-state full-waveform inversion on top of SEM3D"
+requires-python = ">=3.11"
+dependencies = ["numpy", "h5py"]
+
+[project.optional-dependencies]
+examples = ["matplotlib"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["semfwi"]
