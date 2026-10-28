@@ -16,6 +16,11 @@ from . import gradient, misfit, sem_io
 MODEL_FILES = ("Lambda.h5", "Mu.h5", "Rho.h5", "material.spec", "material.input")
 
 
+class TaskError(RuntimeError):
+    """Evaluation failure not caused by the forward simulation (adjoint, kernels, configuration,
+    infrastructure): a smaller step in the line search would not help."""
+
+
 def _kernels(args):
     return gradient.kernels(*args)
 
@@ -32,11 +37,26 @@ def prepare_adjoint(dadj, dfwd):
 
 def run_source(cfg, runner, dfwd, dadj, dobs, grad):
     """dfwd: ready forward directory (mesh, model, input.spec with save_strain if grad).
-    Return dict(u = traces (nsta, nt, 3)) and, if grad, gl and gm (dJ/dlambda, dJ/dmu on the grid)."""
-    runner.run(dfwd)
-    u = sem_io.read_traces(dfwd, len(cfg.stations))
-    if not grad:
-        return dict(u=u)
+    Return dict(u = traces (nsta, nt, 3)) and, if grad, gl and gm (dJ/dlambda, dJ/dmu on the grid).
+    A forward simulation failure propagates as is (SimulationError), any later failure as
+    TaskError; the strains are deleted in all cases."""
+    try:
+        runner.run(dfwd)
+        u = sem_io.read_traces(dfwd, len(cfg.stations))
+        if not grad:
+            return dict(u=u)
+        try:
+            gl, gm = _adjoint(cfg, runner, dfwd, dadj, dobs, u)
+        except Exception as e:
+            raise TaskError(f"after the forward simulation of {dfwd}: {type(e).__name__}: {e}") from e
+        return dict(u=u, gl=gl, gm=gm)
+    finally:
+        for d in (dfwd, dadj):
+            shutil.rmtree(f"{d}/strain", ignore_errors=True)
+
+
+def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
+    """Adjoint simulation and kernels projected on the grid: (gl, gm)."""
     prepare_adjoint(dadj, dfwd)
     tau, hist = misfit.adjoint_history(misfit.residual(u, dobs), cfg.dt)
     srcs = sem_io.write_adjoint_sources(dadj, cfg, tau, hist)
@@ -49,6 +69,4 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
         for kl, km in ex.map(_kernels, jobs):
             gl += kl
             gm += km
-    for d in (dfwd, dadj):
-        shutil.rmtree(f"{d}/strain", ignore_errors=True)
-    return dict(u=u, gl=gl, gm=gm)
+    return gl, gm

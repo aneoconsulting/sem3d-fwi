@@ -13,9 +13,13 @@ filename2 = "Rho.h5";
 """
 
 
+class UnphysicalModel(ValueError):
+    pass
+
+
 def check_bounds(lam, mu, rho):
     if np.any(mu <= 0) or np.any(lam + 2 * mu / 3 <= 0) or np.any(rho <= 0):
-        raise ValueError("non-physical model: mu > 0, lambda + 2 mu / 3 > 0 and rho > 0 required")
+        raise UnphysicalModel("non-physical model: mu > 0, lambda + 2 mu / 3 > 0 and rho > 0 required")
 
 
 def write_model(d, grid, lam, mu, rho, nmat=1):

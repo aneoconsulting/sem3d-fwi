@@ -121,9 +121,10 @@ export ARMONIK_ENDPOINT=http://localhost:5001 ARMONIK_PARTITION=TestPartition0
 python examples/synth/run_synth.py --backend armonik [--taylor | --niter 2]
 ```
 
-In a script: `Problem(..., backend=ArmoniKBackend(cfg))`, then `backend.close()`, which closes
-the session. A SEM3D failure in a task is raised as `SimulationError`, with the end of
-`sem3d.log`.
+In a script: `Problem(..., backend=ArmoniKBackend())`, then `backend.close()`, which closes
+the session. A failure of the forward simulation in a task is raised as `SimulationError`,
+with the end of `sem3d.log`; any other failure (adjoint, kernels, timeout) as `TaskError`,
+which the line search does not catch.
 
 ## Tests
 

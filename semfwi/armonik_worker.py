@@ -16,7 +16,8 @@ from urllib.parse import urlparse
 from . import armonik_io, config, task
 from .runner import Runner
 
-SCRATCH = os.environ.get("SEMFWI_SCRATCH", "/tmp/semfwi")
+# absolute: the mesh symlink is created from each task's forward directory
+SCRATCH = os.path.abspath(os.environ.get("SEMFWI_SCRATCH", "/tmp/semfwi"))
 
 
 def mesh_dir(data):

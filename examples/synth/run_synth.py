@@ -87,7 +87,7 @@ def main():
     backend = None
     if args.backend == "armonik":
         from semfwi.armonik_backend import ArmoniKBackend
-        backend = ArmoniKBackend(cfg)
+        backend = ArmoniKBackend()
     pb = Problem(cfg, runner, dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param=args.param,
                  backend=backend)
     try:

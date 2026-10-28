@@ -173,7 +173,7 @@ def main():
                     xt = x + alpha * p
                     try:
                         Jm, _, gmis_t = pb.evaluate(xt, tag)
-                    except (SimulationError, ValueError) as e:
+                    except (SimulationError, model.UnphysicalModel) as e:
                         print(f"  trial {trial} alpha={alpha:.3e} failed ({e})", flush=True)
                         alpha *= 0.5
                         continue

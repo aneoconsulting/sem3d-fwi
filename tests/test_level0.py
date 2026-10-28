@@ -185,17 +185,17 @@ class _FakeRunner:
 
 class _FakeBackend:
     """u = sum of the Mu model read from the forward directory; gl = gm = 1."""
-    def __init__(self, cfg):
-        self.cfg, self.calls = cfg, []
+    def __init__(self):
+        self.calls = []
 
-    def run(self, jobs):
+    def run(self, cfg, runner, jobs):
         self.calls.append([(j.index, j.grad) for j in jobs])
         out = []
         for j in jobs:
             _, mu, _ = model.read_model(j.fwd)
-            r = dict(u=np.full((len(self.cfg.stations), self.cfg.nt, 3), mu.sum() * 1e-12 + j.index))
+            r = dict(u=np.full((len(cfg.stations), cfg.nt, 3), mu.sum() * 1e-12 + j.index))
             if j.grad:
-                r.update(gl=np.ones(self.cfg.grid.shape), gm=np.ones(self.cfg.grid.shape))
+                r.update(gl=np.ones(cfg.grid.shape), gm=np.ones(cfg.grid.shape))
             out.append(r)
         return out
 
@@ -206,7 +206,7 @@ def test_evaluate_cache(tmp_path):
     cfg = Config(workdir=str(tmp_path), sim_time=0.01, stations=[(1., 2., 0.)],
                  sources=[sem_io.point_source((1., 2., -3.), (0., 0., 1.), func="ricker", tau=0.1, freq=8.)] * 2)
     one = np.ones(cfg.grid.shape)
-    be = _FakeBackend(cfg)
+    be = _FakeBackend()
     dobs = np.zeros((2, 1, cfg.nt, 3))
     pb = Problem(cfg, _FakeRunner(), dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, backend=be)
     x = np.zeros(pb.size)
@@ -244,7 +244,61 @@ def test_worker_compute_matches_local(tmp_path, monkeypatch):
     monkeypatch.setattr(armonik_worker, "SCRATCH", str(tmp_path / "scratch"))
     (tmp_path / "w").mkdir()
     remote = armonik_io.decode_result(armonik_worker.compute(payload, deps, str(tmp_path / "w")))
-    local = LocalBackend(cfg, runner).run([Job(0, d, str(tmp_path / "local" / "adj"), dobs, True)])[0]
+    local = LocalBackend().run(cfg, runner, [Job(0, d, str(tmp_path / "local" / "adj"), dobs, True)])[0]
     for k in ("u", "gl", "gm"):
         assert np.array_equal(remote[k], local[k]), k
     assert np.abs(local["gm"]).max() > 0
+
+
+def test_evaluate_cache_unreadable(tmp_path):
+    """A truncated result.npz (interrupted while writing) is recomputed, not an error."""
+    from semfwi.problem import Problem
+    cfg = Config(workdir=str(tmp_path), sim_time=0.01, stations=[(1., 2., 0.)],
+                 sources=[sem_io.point_source((1., 2., -3.), (0., 0., 1.), func="ricker", tau=0.1, freq=8.)])
+    one = np.ones(cfg.grid.shape)
+    be = _FakeBackend()
+    pb = Problem(cfg, _FakeRunner(), np.zeros((1, 1, cfg.nt, 3)), cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one,
+                 backend=be)
+    x = np.zeros(pb.size)
+    J, _, _ = pb.evaluate(x, "t")
+    fn = tmp_path / "t" / "s0" / "result.npz"
+    fn.write_bytes(fn.read_bytes()[:100])
+    assert pb.evaluate(x, "t")[0] == J and len(be.calls) == 2
+    assert not list((tmp_path / "t" / "s0").glob("*.tmp.npz"))
+
+
+def test_input_files_cited(tmp_path):
+    """Source files referenced by input.spec are inputs, whatever their name."""
+    cfg = Config(workdir=str(tmp_path), stations=[(1., 2., 0.)])
+    src = sem_io.point_source((1., 2., -3.), (0., 0., 1.), func="file", time_file='"ricker.txt"')
+    sem_io.write_input(str(tmp_path), cfg, [src])
+    for fn in ("ricker.txt", "a0_0.txt", "material.input"):
+        (tmp_path / fn).write_text("x")
+    assert Runner.input_files(str(tmp_path)) == ["input.spec", "material.input", "ricker.txt", "stations.txt"]
+
+
+def test_run_source_errors(tmp_path, monkeypatch):
+    """Forward failure: SimulationError; failure after the forward: TaskError; the strains are
+    deleted in both cases."""
+    from semfwi import task
+    from semfwi.runner import SimulationError
+    cfg = Config(workdir=str(tmp_path), sim_time=0.01, stations=[(1., 2., 0.)])
+    fwd, adj = tmp_path / "fwd", tmp_path / "adj"
+
+    class R:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def run(self, d):
+            os.makedirs(f"{d}/strain", exist_ok=True)
+            if self.fail == d:
+                raise SimulationError(d)
+
+    fwd.mkdir()
+    with pytest.raises(SimulationError):
+        task.run_source(cfg, R(str(fwd)), str(fwd), str(adj), None, True)
+    assert not (fwd / "strain").exists()
+    monkeypatch.setattr(sem_io, "read_traces", lambda d, n: np.zeros((n, cfg.nt, 3)))
+    with pytest.raises(task.TaskError):
+        task.run_source(cfg, R(str(adj)), str(fwd), str(adj), np.zeros((1, cfg.nt, 3)), True)
+    assert not (fwd / "strain").exists() and not (adj / "strain").exists()

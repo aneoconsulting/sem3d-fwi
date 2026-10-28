@@ -2,6 +2,7 @@
 running several simulations in parallel."""
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -65,10 +66,13 @@ class Runner:
 
     @staticmethod
     def input_files(d):
-        """Files defining the simulation in d, excluding the mesh: inputs, model, sources."""
+        """Files defining the simulation in d, excluding the mesh: inputs and model, plus the files
+        present in d that input.spec quotes (sources: time_file, kine_file...)."""
+        with open(f"{d}/input.spec") as f:
+            cited = set(re.findall(r'=\s*"([^"/]+)"', f.read()))
         return [fn for fn in sorted(os.listdir(d))
                 if fn in INPUT_FILES or fn == "material.input"
-                or (fn[0] in "aks" and fn.endswith((".txt", ".h5")))]
+                or (fn in cited and os.path.isfile(f"{d}/{fn}"))]
 
     @classmethod
     def input_hash(cls, d):

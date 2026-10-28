@@ -18,11 +18,13 @@ Run directories are prepared here; simulations and kernels are computed by the
 backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
 """
 import hashlib
+import json
 import os
+import zipfile
 
 import numpy as np
 
-from . import misfit, model, sem_io
+from . import config, misfit, model, sem_io
 from .backend import Job, LocalBackend
 
 
@@ -31,7 +33,7 @@ class Problem:
                  fixed=None, pml=None, backend=None):
         assert param in ("lame", "vel"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
-        self.backend = backend or LocalBackend(cfg, runner)
+        self.backend = backend or LocalBackend()
         self.active = tuple(active)
         self.lam_ref, self.mu_ref, self.rho_ref = lam_ref, mu_ref, rho_ref
         self.vp_ref = np.sqrt((lam_ref + 2 * mu_ref) / rho_ref)
@@ -131,8 +133,10 @@ class Problem:
             if results[i] is None:
                 jobs.append(Job(i, d, self._dir(tag, i, "adj"), self.dobs[i], grad))
                 keys.append(key)
-        for job, key, r in zip(jobs, keys, self.backend.run(jobs) if jobs else []):
-            np.savez(self._result_fn(tag, job.index), key=key, **r)
+        for job, key, r in zip(jobs, keys, self.backend.run(self.cfg, self.runner, jobs) if jobs else []):
+            fn = self._result_fn(tag, job.index)
+            np.savez(fn + ".tmp.npz", key=key, **r)  # an interruption while writing leaves no truncated cache
+            os.replace(fn + ".tmp.npz", fn)
             results[job.index] = r
         self.nsim += len(jobs) * (2 if grad else 1)
         u = np.stack([r["u"] for r in results])
@@ -147,15 +151,18 @@ class Problem:
         return os.path.join(self.cfg.workdir, tag, f"s{i}", "result.npz")
 
     def _key(self, dfwd, i, grad):
-        """Fingerprint of the inputs of source i: forward directory, plus data if grad."""
+        """Fingerprint of the inputs of source i: forward directory, plus data and adjoint sources if grad."""
         h = hashlib.sha1(self.runner.input_hash(dfwd).encode())
         if grad:
             h.update(np.ascontiguousarray(self.dobs[i]).tobytes())
+            d = config.to_dict(self.cfg)
+            h.update(json.dumps([d["adjoint"], d["receiver_grid"]]).encode())
         return h.hexdigest()
 
     def _cached(self, tag, i, key):
+        """Result kept for key, else None (file missing, from other inputs, or unreadable)."""
         try:
-            st = np.load(self._result_fn(tag, i))
-        except FileNotFoundError:
+            with np.load(self._result_fn(tag, i)) as st:
+                return {k: st[k] for k in st.files if k != "key"} if str(st["key"]) == key else None
+        except (OSError, EOFError, KeyError, ValueError, zipfile.BadZipFile):
             return None
-        return {k: st[k] for k in st.files if k != "key"} if str(st["key"]) == key else None

@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from .model import UnphysicalModel
 from .runner import SimulationError
 
 
@@ -89,7 +90,7 @@ def minimize(problem, x0, niter, workdir, step0=0.02, c1=1e-4, max_trials=6, m=5
             xt = x + alpha * p
             try:
                 Jt, _, gt = problem.evaluate(xt, tag)
-            except (SimulationError, ValueError) as e:
+            except (SimulationError, UnphysicalModel) as e:  # step too large; other failures propagate
                 log(f"  trial {trial} alpha = {alpha:.3e}: failed ({e})")
                 alpha *= 0.5
                 continue
