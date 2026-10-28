@@ -1,5 +1,5 @@
 """Gather the results of the Fathi test cases into one JSON file:
-table 2 (case 1), histories and profiles (case 2), pulses and spectra, traces.
+table 2 (case 1), histories and profiles (cases 2 and 3), pulses and spectra, traces.
 
     python export_fathi.py [--out $SEMFWI_RUNS/fathi/summary.json]
 """
@@ -10,13 +10,15 @@ import os
 
 import numpy as np
 
-from fathi import PULSES, homogeneous, make_config, profile, pulse, true_model
+from fathi import PULSES, homogeneous, layered, make_config, profile, pulse, true_model
+from run_fathi2 import config
 from semfwi import sem_io
 from semfwi.config import RUNS_DIR
 from semfwi.problem import Problem
 
 ROOT = os.path.join(RUNS_DIR, "fathi")
 PROFILE_XY = [(0., 0.), (10., 10.), (20., 20.)]
+NAMES = {2: ("mu", "lambda", "both", "both_bias"), 3: ("both_bias", "both_bias_test")}
 
 
 def pulses():
@@ -51,14 +53,14 @@ def case1():
     return out
 
 
-def experiment(name):
-    work = f"{ROOT}/case2/{name}"
+def experiment(name, case=2):
+    work = f"{ROOT}/case{case}/{name}"
     hf = f"{work}/history.json"
     if not os.path.exists(hf):
         return None
     hist = json.load(open(hf))
-    cfg = make_config(work, 2)
-    lam_t, mu_t, rho = true_model(cfg.grid)
+    cfg = make_config(work, case)
+    lam_t, mu_t, rho = true_model(cfg.grid, case)
     lam0, mu0, _ = homogeneous(cfg.grid)
     active = {"mu": ("b",), "lambda": ("a",)}.get(name.split("_")[0], ("a", "b"))
     pb = Problem(cfg, None, None, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t))
@@ -80,7 +82,7 @@ def experiment(name):
     waves = {}
     first = [d for d in sorted(glob.glob(f"{work}/initial_fwd/s0/fwd")) if os.path.isdir(f"{d}/traces")]
     finals = sorted(glob.glob(f"{work}/*/it{last:03d}_t*/s0/fwd")) or sorted(glob.glob(f"{work}/*/it{last:03d}_start/s0/fwd"))
-    obs = sorted(glob.glob(f"{work}/data_*/sim")) or sorted(glob.glob(f"{ROOT}/case2/*/data_p20/sim"))
+    obs = sorted(glob.glob(f"{work}/data_*/sim")) or sorted(glob.glob(f"{ROOT}/case{case}/*/data_p20/sim"))
     try:
         nsta = len(cfg.stations)
         sel = [nsta // 2, 0, nsta // 2 + 20]
@@ -92,7 +94,7 @@ def experiment(name):
                 u = sem_io.read_traces(dirs[-1], nsta)
                 waves[lab] = u[sel, :, 2].round(12).tolist()
         pdir = f"{work}/{hist[-1]['pulse']}/data_{hist[-1]['pulse']}/sim"
-        dd = glob.glob(f"{ROOT}/case2/data_{hist[-1]['pulse']}/sim")
+        dd = glob.glob(f"{ROOT}/case{case}/data_{hist[-1]['pulse']}/sim")
         if dd:
             waves["observed"] = sem_io.read_traces(dd[0], nsta)[sel, :, 2].round(12).tolist()
         waves["stations"] = [cfg.stations[s] for s in sel]
@@ -100,18 +102,18 @@ def experiment(name):
     except Exception as e:  # the traces are only a complement
         waves["error"] = str(e)
     return dict(history=hist, z=z.tolist(), profiles=prof,
-                target={"mu": (profile(z) / 1e6).round(3).tolist()}, slice=sl, waves=waves)
+                target={"mu": ((layered if case == 3 else profile)(z) / 1e6).round(3).tolist()}, slice=sl, waves=waves)
 
 
-def initial_forward(name):
+def initial_forward(name, case=2):
     """Traces at the initial model (the iteration 0 directories are cleaned up during the inversion)."""
     from semfwi.runner import Runner
-    work = f"{ROOT}/case2/{name}"
+    work = f"{ROOT}/case{case}/{name}"
     if os.path.isdir(f"{work}/initial_fwd/s0/fwd/traces") or not os.path.isdir(work):
         return
     pn = json.load(open(f"{work}/history.json"))[-1]["pulse"]   # same pulse as the final traces
-    cfg = make_config(work, 2, pn)
-    lam_t, mu_t, rho = true_model(cfg.grid)
+    cfg = config(work, case, pn)
+    lam_t, mu_t, rho = true_model(cfg.grid, case)
     lam0, mu0, _ = homogeneous(cfg.grid)
     active = {"mu": ("b",), "lambda": ("a",)}.get(name.split("_")[0], ("a", "b"))
     runner = Runner(cfg)
@@ -131,13 +133,15 @@ def main():
     ap.add_argument("--initial", action="store_true", help="compute the traces for the initial model")
     args = ap.parse_args()
     if args.initial:
-        for name in ("mu", "lambda", "both", "both_bias"):
-            initial_forward(name)
-    out = dict(pulses=pulses(), case1=case1(), case2={})
-    for name in ("mu", "lambda", "both", "both_bias"):
-        e = experiment(name)
-        if e:
-            out["case2"][name] = e
+        for case, names in NAMES.items():
+            for name in names:
+                initial_forward(name, case)
+    out = dict(pulses=pulses(), case1=case1(), case2={}, case3={})
+    for case, names in NAMES.items():
+        for name in names:
+            e = experiment(name, case)
+            if e:
+                out[f"case{case}"][name] = e
     json.dump(out, open(args.out, "w"))
     print(args.out, os.path.getsize(args.out) // 1024, "KB")
 

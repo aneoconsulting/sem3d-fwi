@@ -1,14 +1,18 @@
-"""Test case 2 of Fathi et al. (2015, section 4.2): inversion of a smooth profile.
+"""Test cases 2 and 3 of Fathi et al. (2015, sections 4.2 and 4.3): inversion of a smooth profile,
+and of a layered profile (--case 3).
 
     python run_fathi2.py mu      [--stages p20:20 p30:10]   # 4.2.1, mu only, lambda at the true profile
     python run_fathi2.py lambda  [--stages p20:25]          # 4.2.1, lambda only, mu at the true profile
     python run_fathi2.py both    [--stages p20:25] [--bias 15]   # 4.2.2, simultaneous, lambda bias
+    python run_fathi2.py both --case 3 [--stages p20:310 p30:550 p40:252] [--bias 15]   # 4.3
 
 As in the paper: homogeneous 80 MPa initial model; data computed on the inversion mesh;
-Tikhonov regularization with R = rho_k ||g_mis|| / ||g_reg|| (section 3.3.1), rho_k decreasing
-from 0.5 to 0.3; frequency continuation (3.3.2); bias of the lambda direction towards the mu
-direction (3.3.3, eq. 25), the weight W decreasing from 1 to 0 over --bias iterations;
-L-BFGS with 15 vectors. Main deviation: the number of iterations (compute budget).
+regularization with R = rho_k ||g_mis|| / ||g_reg|| (section 3.3.1), rho_k decreasing from 0.5 to
+0.3: Tikhonov for case 2, Total Variation with eps = 0.01 for case 3 (eq. 9); frequency continuation
+(3.3.2), with T = 0.45 s for p20 and 0.4 s for p30 and p40 in case 3 (0.5 s in case 2); bias of the
+lambda direction towards the mu direction (3.3.3, eq. 25), the weight W decreasing from 1 to 0 over
+--bias iterations; L-BFGS with 15 vectors. Main deviation: the number of iterations (compute budget;
+the paper reaches 1112 iterations in case 3).
 """
 import argparse
 import json
@@ -24,13 +28,21 @@ from semfwi.optim import LBFGS
 from semfwi.problem import Problem
 from semfwi.runner import Runner, SimulationError
 
-ROOT = os.path.join(RUNS_DIR, "fathi", "case2")
+SIM_TIME = {2: {}, 3: {"p20": 0.45, "p30": 0.4, "p40": 0.4}}  # per pulse; 0.5 s if absent
 
 
-def observed(pulse_name):
-    cfg = make_config(f"{ROOT}/data_{pulse_name}", 2, pulse_name)
+def root(case):
+    return os.path.join(RUNS_DIR, "fathi", f"case{case}")
+
+
+def config(workdir, case, pulse_name):
+    return make_config(workdir, case, pulse_name, sim_time=SIM_TIME[case].get(pulse_name))
+
+
+def observed(pulse_name, case=2):
+    cfg = config(f"{root(case)}/data_{pulse_name}", case, pulse_name)
     runner = Runner(cfg)
-    lam, mu, rho = true_model(cfg.grid)
+    lam, mu, rho = true_model(cfg.grid, case)
     d = f"{cfg.workdir}/sim"
     if os.path.exists(f"{d}/.done") and os.path.isdir(f"{d}/traces"):
         # already computed (shared by the inversions running in parallel): read only
@@ -72,9 +84,57 @@ class Tikhonov:
         return np.concatenate(out)
 
 
+class TotalVariation(Tikhonov):
+    """J_reg(x) = 1/2 sum_blocks sum_nodes sqrt(|grad m|^2 + eps) on the grid (eq. 9), grad m in MPa/m
+    by forward differences (zero at the last node of each axis), m = m_ref (1 + x) with a
+    homogeneous reference (as the 80 MPa initial model), param = "lame"."""
+
+    def __init__(self, pb, eps=0.01):
+        assert pb.param == "lame", pb.param
+        super().__init__(pb)
+        self.eps = eps
+        refs = {"a": pb.lam_ref, "b": pb.mu_ref}
+        self.scale = [1e-6 * float(np.mean(refs[p][pb.mask])) / pb.cfg.grid.h for p in pb.active]
+
+    @staticmethod
+    def _diffs(v, s):
+        out = []
+        for a in range(3):
+            d = np.zeros_like(v)
+            sl = [slice(None)] * 3
+            sl[a] = slice(None, -1)
+            d[tuple(sl)] = s * np.diff(v, axis=a)
+            out.append(d)
+        return out
+
+    def value(self, x):
+        return 0.5 * sum(np.sum(np.sqrt(sum(d ** 2 for d in self._diffs(v, s)) + self.eps))
+                         for v, s in zip(self._blocks(x), self.scale))
+
+    def grad(self, x):
+        out = []
+        for v, s in zip(self._blocks(x), self.scale):
+            d = self._diffs(v, s)
+            D = np.sqrt(sum(di ** 2 for di in d) + self.eps)
+            g = np.zeros_like(v)
+            for a in range(3):
+                q = 0.5 * s * d[a] / D  # derivative with respect to v[i + e_a] - v[i]
+                sl_lo = [slice(None)] * 3
+                sl_hi = [slice(None)] * 3
+                sl_lo[a] = slice(None, -1)
+                sl_hi[a] = slice(1, None)
+                g[tuple(sl_lo)] -= q[tuple(sl_lo)]
+                g[tuple(sl_hi)] += q[tuple(sl_lo)]
+            out.append(g[self.pb.mask])
+        return np.concatenate(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=("mu", "lambda", "both"))
+    ap.add_argument("--case", type=int, choices=(2, 3), default=2)
+    ap.add_argument("--reg", choices=("tikhonov", "tv"), default=None, help="default: tikhonov (2), tv (3)")
+    ap.add_argument("--eps", type=float, default=0.01, help="TV parameter, (MPa/m)^2")
     ap.add_argument("--stages", nargs="+", default=None, help="pulse:iterations")
     ap.add_argument("--bias", type=int, default=0)
     ap.add_argument("--step0", type=float, default=0.05)
@@ -83,7 +143,8 @@ def main():
     args = ap.parse_args()
     stages = [(s.split(":")[0], int(s.split(":")[1])) for s in (args.stages or ["p20:20"])]
     name = args.tag or args.which + ("_bias" if args.bias else "")
-    work = f"{ROOT}/{name}"
+    work = f"{root(args.case)}/{name}"
+    reg_kind = args.reg or ("tv" if args.case == 3 else "tikhonov")
     os.makedirs(work, exist_ok=True)
     active = {"mu": ("b",), "lambda": ("a",), "both": ("a", "b")}[args.which]
     total = sum(n for _, n in stages)
@@ -100,16 +161,16 @@ def main():
         done_in_stage = sum(1 for h in history if h["stage"] == si and h["it_stage"] > 0)
         if done_in_stage >= niter:
             continue
-        cfg = make_config(f"{work}/{pn}", 2, pn)
+        cfg = config(f"{work}/{pn}", args.case, pn)
         runner = Runner(cfg)
-        lam_t, mu_t, rho = true_model(cfg.grid)
+        lam_t, mu_t, rho = true_model(cfg.grid, args.case)
         lam0, mu0, _ = homogeneous(cfg.grid)
         t0 = time.time()
-        dobs = observed(pn)
+        dobs = observed(pn, args.case)
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
         pb = Problem(cfg, runner, dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t), pml="follow")
         pb.nsim = history[-1]["nsim"] if history else 0  # cumulative count, including before a restart
-        reg = Tikhonov(pb)
+        reg = TotalVariation(pb, args.eps) if reg_kind == "tv" else Tikhonov(pb)
         x_true = pb.to_x(lam_t, mu_t)
         if x is None:
             x = np.zeros(pb.size)

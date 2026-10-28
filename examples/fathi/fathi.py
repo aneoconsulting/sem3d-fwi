@@ -1,7 +1,9 @@
 """Test cases of Fathi, Kallivokas and Poursartip (2015), section 4: smooth profile
-lambda(z) = mu(z) = 80 + 0.45 |z| + 35 exp(-(|z| - 22.5)^2 / 150) MPa, rho = 2000 kg/m3,
-uniform vertical load of 1 kPa on the surface, Gaussian pulses of table 1
-f(t) = exp(-(t - mu)^2 / sigma) (sigma is a variance: see the report, typo in the paper).
+lambda(z) = mu(z) = 80 + 0.45 |z| + 35 exp(-(|z| - 22.5)^2 / 150) MPa (cases 1 and 2, sections 4.1
+and 4.2), layered profile lambda(z) = mu(z) = 80, 101.25, 125 MPa above -12 m, above -27 m and below
+(case 3, section 4.3, eq. 30), rho = 2000 kg/m3, uniform vertical load of 1 kPa on the surface,
+Gaussian pulses of table 1 f(t) = exp(-(t - mu)^2 / sigma) (sigma is a variance: see the report,
+typo in the paper).
 """
 import numpy as np
 
@@ -18,14 +20,19 @@ def profile(z):
     return 1e6 * (80. + 0.45 * a + 35. * np.exp(-(a - 22.5) ** 2 / 150.))
 
 
+def layered(z):
+    """lambda = mu in Pa at depth z <= 0 (case 3)."""
+    return 1e6 * np.where(z >= -12., 80., np.where(z >= -27., 101.25, 125.))
+
+
 def pulse(name):
     m, s = PULSES[name]
     return lambda t: np.exp(-(t - m) ** 2 / s)
 
 
-def true_model(grid):
+def true_model(grid, case=2):
     Z = grid.mesh()[2]
-    p = profile(Z)
+    p = layered(Z) if case == 3 else profile(Z)
     return p.copy(), p.copy(), np.full(grid.shape, RHO)
 
 
@@ -34,12 +41,12 @@ def homogeneous(grid, value=80e6):
     return value * one, value * one, RHO * one
 
 
-def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4):
+def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=None):
     """case 1: 24 x 24 x 45 m, 1 m elements (0.5 m for the data), 5 m PML.
-    case 2: 40 x 40 x 45 m, 1.25 m elements, 6.25 m PML. Quadratic elements (ngll = 3),
-    T = 0.5 s. Deviation from the paper: SEM3D's Newmark scheme diverges at Fathi's time steps
-    (Runge-Kutta 4: 9e-4 and 1e-3 s); we use 4.5e-4 s (case 1, 2.25e-4 s for the fine data)
-    and 6.25e-4 s (case 2), i.e. a Courant number of about 0.4."""
+    cases 2 and 3: 40 x 40 x 45 m, 1.25 m elements, 6.25 m PML. Quadratic elements (ngll = 3),
+    T = 0.5 s unless sim_time is given. Deviation from the paper: SEM3D's Newmark scheme diverges
+    at Fathi's time steps (Runge-Kutta 4: 9e-4 and 1e-3 s); we use 4.5e-4 s (case 1, 2.25e-4 s for
+    the fine data) and 6.25e-4 s (cases 2 and 3), i.e. a Courant number of about 0.4."""
     if case == 1:
         half, depth, zone = 12., 45., 11.
         h = 0.5 if fine else 1.
@@ -49,13 +56,14 @@ def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4):
         period = 4
     else:
         half, depth, zone = 20., 45., 17.5
-        h, dt, sim_time, gh, period = 1.25, 6.25e-4, 0.5, 0.625, 8
+        h, dt, gh, period = 1.25, 6.25e-4, 0.625, 8
+        sim_time = sim_time or 0.5
     n = int(round(2 * half / gh)) + 1
     nz = int(round(depth / gh)) + 1
     grid = Grid(xmin=(-half, -half, -depth), h=gh, n=(n, n, nz))
     nl = int(round(depth / h))
     xs = np.arange(-zone, zone + 1e-9, 0.5 * h if not fine else 0.5 * 2 * h)  # coarse mesh nodes
-    if case == 2:
+    if case != 1:
         xs = np.arange(-zone, zone + 1e-9, 0.625)
     stations = [(x, y, 0.) for x in xs for y in xs]
     load = sem_io.SurfaceLoad(-zone, zone, h, 3, 1000., pulse(pulse_name))

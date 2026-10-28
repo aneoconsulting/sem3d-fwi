@@ -77,11 +77,12 @@ instead of one.
   python examples/synth/analyse_synth.py
   ```
 - `examples/fathi`: test cases of Fathi, Kallivokas and Poursartip (2015,
-  arXiv:1504.08340), sections 4.1 and 4.2.
+  arXiv:1504.08340), sections 4.1 to 4.3.
   ```
   python examples/fathi/run_fathi1.py [--pulses p20 p40]       # gradient check
   python examples/fathi/run_fathi2.py mu|lambda|both [--stages p20:20 p30:10] [--bias 15]
-  python examples/fathi/export_fathi.py                        # results -> summary.json
+  python examples/fathi/run_fathi2.py both --case 3 [--stages p20:310 p30:550 p40:252] [--bias 15]
+  python examples/fathi/export_fathi.py                        # results -> summary.json (cases 1, 2)
   ```
 
 ## ArmoniK
