@@ -85,6 +85,13 @@ instead of one.
   python examples/fathi/run_fathi2.py both --case 4 [--stages p20:410 p30:320 p40:430] [--bias 50] [--noise 0.05]
   python examples/fathi/export_fathi.py                        # results -> summary.json
   ```
+  `--precond block|depth` (not in the paper) scales the L-BFGS directions: same norm for the
+  lambda and mu blocks, and with `depth` a compensation of the sensitivity loss with depth.
+- `examples/nappe`: our case, not in the paper. Fathi's geometry and three layers, with a water
+  table at -10 m below which lambda is 5 times mu: the interfaces of lambda and mu differ.
+  ```
+  python examples/nappe/run_nappe.py both [--stages p20:20] [--bias 10] [--precond depth]
+  ```
 
 ## ArmoniK
 

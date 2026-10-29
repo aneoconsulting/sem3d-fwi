@@ -17,15 +17,20 @@ vectors. --noise adds Gaussian noise to the data (case 4, figures 27 to 30): sta
 noise x max |d| of each trace (station, component), an interpretation, the paper does not define
 the level; fixed seed. Main deviation: the number of iterations (compute budget; the paper reaches
 1112 iterations in case 3, 1160 in case 4).
+
+--precond (not in the paper, default none) scales the L-BFGS directions (see preconditioner).
+Other cases on the same geometry (examples/nappe) reuse invert() with their own Case.
 """
 import argparse
 import json
 import os
 import time
+from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
-from fathi import homogeneous, make_config, true_model
+from fathi import PULSES, homogeneous, make_config, true_model
 from semfwi import model, sem_io
 from semfwi.config import RUNS_DIR
 from semfwi.optim import LBFGS
@@ -36,18 +41,32 @@ SIM_TIME = {2: {}, 3: {"p20": 0.45, "p30": 0.4, "p40": 0.4}}  # per pulse; 0.5 s
 SIM_TIME[4] = SIM_TIME[3]
 
 
-def root(case):
-    return os.path.join(RUNS_DIR, "fathi", f"case{case}")
+@dataclass
+class Case:
+    """What differs between the test cases: where the runs go, the true model (grid -> lambda, mu,
+    rho), the simulated time per pulse (0.5 s if absent), the geometry of make_config and the
+    default regularization."""
+    root: str
+    true_model: Callable
+    sim_time: dict
+    geometry: int = 2
+    reg: str = "tv"
+
+
+def fathi_case(n):
+    return Case(os.path.join(RUNS_DIR, "fathi", f"case{n}"), lambda grid: true_model(grid, n), SIM_TIME[n],
+                n, "tikhonov" if n == 2 else "tv")
 
 
 def config(workdir, case, pulse_name):
-    return make_config(workdir, case, pulse_name, sim_time=SIM_TIME[case].get(pulse_name))
+    case = fathi_case(case) if isinstance(case, int) else case
+    return make_config(workdir, case.geometry, pulse_name, sim_time=case.sim_time.get(pulse_name))
 
 
-def observed(pulse_name, case=2):
-    cfg = config(f"{root(case)}/data_{pulse_name}", case, pulse_name)
+def observed(pulse_name, case):
+    cfg = config(f"{case.root}/data_{pulse_name}", case, pulse_name)
     runner = Runner(cfg)
-    lam, mu, rho = true_model(cfg.grid, case)
+    lam, mu, rho = case.true_model(cfg.grid)
     d = f"{cfg.workdir}/sim"
     if os.path.exists(f"{d}/.done") and os.path.isdir(f"{d}/traces"):
         # already computed (shared by the inversions running in parallel): read only
@@ -142,11 +161,33 @@ class TotalVariation(Tikhonov):
         return np.concatenate(out)
 
 
-def main():
+def preconditioner(kind, pb, g):
+    """Diagonal scaling of the L-BFGS directions, computed from the first gradient g of a frequency stage.
+    "block": the lambda and mu blocks of the scaled gradient get the same norm (the data are much more
+    sensitive to mu); "depth": in addition, each block is divided by the horizontal mean of |g| at each
+    depth (smoothed over 5 nodes, ratio clipped at 100), the surface data being less sensitive to the
+    deep nodes. None for "none"."""
+    if kind == "none":
+        return None
+    d = np.ones_like(g)
+    n, m = pb.n, pb.mask
+    for i in range(len(g) // n):
+        sl = slice(i * n, (i + 1) * n)
+        if kind == "depth":
+            a = np.abs(pb.grid_field(g[sl]))
+            prof = np.array([a[:, :, k][m[:, :, k]].mean() if m[:, :, k].any() else 0. for k in range(a.shape[2])])
+            prof = np.convolve(prof, np.ones(5) / 5, mode="same")
+            w = np.broadcast_to(1. / np.maximum(prof, prof.max() / 100), a.shape)
+            d[sl] = w[m]
+        d[sl] /= np.linalg.norm(d[sl] * g[sl])
+    return d
+
+
+def parser():
+    """Arguments shared by the cases on this geometry (run_fathi2 adds --case)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=("mu", "lambda", "both"))
-    ap.add_argument("--case", type=int, choices=(2, 3, 4), default=2)
-    ap.add_argument("--reg", choices=("tikhonov", "tv"), default=None, help="default: tikhonov (2), tv (3, 4)")
+    ap.add_argument("--reg", choices=("tikhonov", "tv"), default=None, help="default: tikhonov (2), tv (others)")
     ap.add_argument("--noise", type=float, default=0., help="Gaussian noise on the data, relative (0.05: 5 %%)")
     ap.add_argument("--eps", type=float, default=0.01, help="TV parameter, (MPa/m)^2")
     ap.add_argument("--stages", nargs="+", default=None, help="pulse:iterations")
@@ -154,12 +195,24 @@ def main():
     ap.add_argument("--step0", type=float, default=0.05)
     ap.add_argument("--wp", nargs=2, type=float, default=(0.5, 0.3))
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--precond", choices=("none", "block", "depth"), default="none")
+    return ap
+
+
+def main():
+    ap = parser()
+    ap.add_argument("--case", type=int, choices=(2, 3, 4), default=2)
     args = ap.parse_args()
+    invert(args, fathi_case(args.case))
+
+
+def invert(args, case):
     stages = [(s.split(":")[0], int(s.split(":")[1])) for s in (args.stages or ["p20:20"])]
     name = args.tag or (args.which + ("_bias" if args.bias else "")
-                        + (f"_noise{round(100 * args.noise)}" if args.noise else ""))
-    work = f"{root(args.case)}/{name}"
-    reg_kind = args.reg or ("tikhonov" if args.case == 2 else "tv")
+                        + (f"_noise{round(100 * args.noise)}" if args.noise else "")
+                        + (f"_{args.precond}" if args.precond != "none" else ""))
+    work = f"{case.root}/{name}"
+    reg_kind = args.reg or case.reg
     os.makedirs(work, exist_ok=True)
     active = {"mu": ("b",), "lambda": ("a",), "both": ("a", "b")}[args.which]
     total = sum(n for _, n in stages)
@@ -176,17 +229,16 @@ def main():
         done_in_stage = sum(1 for h in history if h["stage"] == si and h["it_stage"] > 0)
         if done_in_stage >= niter:
             continue
-        cfg = config(f"{work}/{pn}", args.case, pn)
+        cfg = config(f"{work}/{pn}", case, pn)
         runner = Runner(cfg)
-        lam_t, mu_t, rho = true_model(cfg.grid, args.case)
+        lam_t, mu_t, rho = case.true_model(cfg.grid)
         lam0, mu0, _ = homogeneous(cfg.grid)
         t0 = time.time()
-        dobs = add_noise(observed(pn, args.case), args.noise, seed=list(SIM_TIME[3]).index(pn))
+        dobs = add_noise(observed(pn, case), args.noise, seed=list(PULSES).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
         pb = Problem(cfg, runner, dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t), pml="follow")
         pb.nsim = history[-1]["nsim"] if history else 0  # cumulative count, including before a restart
         reg = TotalVariation(pb, args.eps) if reg_kind == "tv" else Tikhonov(pb)
-        x_true = pb.to_x(lam_t, mu_t)
         if x is None:
             x = np.zeros(pb.size)
 
@@ -220,6 +272,13 @@ def main():
             if done_in_stage == 0:
                 record(0, J, 0., 0., 0, time.time() - t0, gmis)
         saved = {}
+        # computed once per frequency and kept, so that a restart uses the same scaling
+        d_fn = f"{work}/precond_{pn}.npy"
+        if args.precond != "none" and not os.path.exists(d_fn):
+            np.save(d_fn, preconditioner(args.precond, pb, gmis))
+        if args.precond != "none":
+            d = np.load(d_fn)
+            opt.precond = lambda v: d * v
         for k in range(done_in_stage + 1, niter + 1):
             t0 = time.time()
             it_global += 1
@@ -238,7 +297,8 @@ def main():
             if gp >= 0:
                 print("  not a descent direction: reset", flush=True)
                 opt.reset()
-                p, gp = -g, -(g @ g)
+                p = -opt.precond(g)
+                gp = g @ p
             # already steepest descent (no memory, no bias): a second attempt would change nothing
             plain = not opt.s and not (args.bias and len(active) == 2 and it_global <= args.bias)
             accepted, trial0 = False, 0
@@ -266,7 +326,8 @@ def main():
                 # before giving up on this frequency: clear L-BFGS memory, steepest descent (no bias)
                 print("  line search failed: L-BFGS memory cleared, retrying with steepest descent", flush=True)
                 opt.reset()
-                p, gp = -g, -(g @ g)
+                p = -opt.precond(g)
+                gp = g @ p
                 trial0 = trial + 1
             if not accepted:
                 print(f"line search failed at iteration {it_global}", flush=True)
