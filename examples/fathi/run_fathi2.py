@@ -1,18 +1,22 @@
-"""Test cases 2 and 3 of Fathi et al. (2015, sections 4.2 and 4.3): inversion of a smooth profile,
-and of a layered profile (--case 3).
+"""Test cases 2 to 4 of Fathi et al. (2015, sections 4.2 to 4.4): inversion of a smooth profile,
+of a layered profile (--case 3) and of a layered profile with an ellipsoidal inclusion (--case 4).
 
     python run_fathi2.py mu      [--stages p20:20 p30:10]   # 4.2.1, mu only, lambda at the true profile
     python run_fathi2.py lambda  [--stages p20:25]          # 4.2.1, lambda only, mu at the true profile
     python run_fathi2.py both    [--stages p20:25] [--bias 15]   # 4.2.2, simultaneous, lambda bias
     python run_fathi2.py both --case 3 [--stages p20:310 p30:550 p40:252] [--bias 15]   # 4.3
+    python run_fathi2.py both --case 4 [--stages p20:410 p30:320 p40:430] [--bias 50] [--noise 0.05]   # 4.4
 
 As in the paper: homogeneous 80 MPa initial model; data computed on the inversion mesh;
 regularization with R = rho_k ||g_mis|| / ||g_reg|| (section 3.3.1), rho_k decreasing from 0.5 to
-0.3: Tikhonov for case 2, Total Variation with eps = 0.01 for case 3 (eq. 9); frequency continuation
-(3.3.2), with T = 0.45 s for p20 and 0.4 s for p30 and p40 in case 3 (0.5 s in case 2); bias of the
-lambda direction towards the mu direction (3.3.3, eq. 25), the weight W decreasing from 1 to 0 over
---bias iterations; L-BFGS with 15 vectors. Main deviation: the number of iterations (compute budget;
-the paper reaches 1112 iterations in case 3).
+0.3: Tikhonov for case 2, Total Variation with eps = 0.01 for cases 3 and 4 (eq. 9); frequency
+continuation (3.3.2), with T = 0.45 s for p20 and 0.4 s for p30 and p40 in cases 3 and 4 (0.5 s in
+case 2); bias of the lambda direction towards the mu direction (3.3.3, eq. 25), the weight W
+decreasing from 1 to 0 over --bias iterations (50 in case 4: kink of figure 26); L-BFGS with 15
+vectors. --noise adds Gaussian noise to the data (case 4, figures 27 to 30): standard deviation
+noise x max |d| of each trace (station, component), an interpretation, the paper does not define
+the level; fixed seed. Main deviation: the number of iterations (compute budget; the paper reaches
+1112 iterations in case 3, 1160 in case 4).
 """
 import argparse
 import json
@@ -29,6 +33,7 @@ from semfwi.problem import Problem
 from semfwi.runner import Runner, SimulationError
 
 SIM_TIME = {2: {}, 3: {"p20": 0.45, "p30": 0.4, "p40": 0.4}}  # per pulse; 0.5 s if absent
+SIM_TIME[4] = SIM_TIME[3]
 
 
 def root(case):
@@ -53,6 +58,14 @@ def observed(pulse_name, case=2):
     sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, cfg.sources))
     runner.run(d)
     return sem_io.read_traces(d, len(cfg.stations))[None]
+
+
+def add_noise(d, level, seed=0):
+    """d + N(0, (level max |d_trace|)^2), traces along axis -2 (time); d: (nsrc, nsta, nt, 3)."""
+    if not level:
+        return d
+    rng = np.random.default_rng(seed)
+    return d + level * np.max(np.abs(d), axis=-2, keepdims=True) * rng.standard_normal(d.shape)
 
 
 class Tikhonov:
@@ -132,8 +145,9 @@ class TotalVariation(Tikhonov):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("which", choices=("mu", "lambda", "both"))
-    ap.add_argument("--case", type=int, choices=(2, 3), default=2)
-    ap.add_argument("--reg", choices=("tikhonov", "tv"), default=None, help="default: tikhonov (2), tv (3)")
+    ap.add_argument("--case", type=int, choices=(2, 3, 4), default=2)
+    ap.add_argument("--reg", choices=("tikhonov", "tv"), default=None, help="default: tikhonov (2), tv (3, 4)")
+    ap.add_argument("--noise", type=float, default=0., help="Gaussian noise on the data, relative (0.05: 5 %%)")
     ap.add_argument("--eps", type=float, default=0.01, help="TV parameter, (MPa/m)^2")
     ap.add_argument("--stages", nargs="+", default=None, help="pulse:iterations")
     ap.add_argument("--bias", type=int, default=0)
@@ -142,9 +156,10 @@ def main():
     ap.add_argument("--tag", default=None)
     args = ap.parse_args()
     stages = [(s.split(":")[0], int(s.split(":")[1])) for s in (args.stages or ["p20:20"])]
-    name = args.tag or args.which + ("_bias" if args.bias else "")
+    name = args.tag or (args.which + ("_bias" if args.bias else "")
+                        + (f"_noise{round(100 * args.noise)}" if args.noise else ""))
     work = f"{root(args.case)}/{name}"
-    reg_kind = args.reg or ("tv" if args.case == 3 else "tikhonov")
+    reg_kind = args.reg or ("tikhonov" if args.case == 2 else "tv")
     os.makedirs(work, exist_ok=True)
     active = {"mu": ("b",), "lambda": ("a",), "both": ("a", "b")}[args.which]
     total = sum(n for _, n in stages)
@@ -166,7 +181,7 @@ def main():
         lam_t, mu_t, rho = true_model(cfg.grid, args.case)
         lam0, mu0, _ = homogeneous(cfg.grid)
         t0 = time.time()
-        dobs = observed(pn, args.case)
+        dobs = add_noise(observed(pn, args.case), args.noise, seed=list(SIM_TIME[3]).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
         pb = Problem(cfg, runner, dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t), pml="follow")
         pb.nsim = history[-1]["nsim"] if history else 0  # cumulative count, including before a restart

@@ -1,7 +1,9 @@
 """Test cases of Fathi, Kallivokas and Poursartip (2015), section 4: smooth profile
 lambda(z) = mu(z) = 80 + 0.45 |z| + 35 exp(-(|z| - 22.5)^2 / 150) MPa (cases 1 and 2, sections 4.1
 and 4.2), layered profile lambda(z) = mu(z) = 80, 101.25, 125 MPa above -12 m, above -27 m and below
-(case 3, section 4.3, eq. 30), rho = 2000 kg/m3, uniform vertical load of 1 kPa on the surface,
+(case 3, section 4.3, eq. 30), the same with an ellipsoidal inclusion of 156.8 MPa
+((x - 7.5) / 7.5)^2 + (y / 5)^2 + ((z + 12) / 5.5)^2 <= 1 (case 4, section 4.4, eq. 31),
+rho = 2000 kg/m3, uniform vertical load of 1 kPa on the surface,
 Gaussian pulses of table 1 f(t) = exp(-(t - mu)^2 / sigma) (sigma is a variance: see the report,
 typo in the paper).
 """
@@ -30,9 +32,16 @@ def pulse(name):
     return lambda t: np.exp(-(t - m) ** 2 / s)
 
 
+def inclusion(x, y, z):
+    """Inside the ellipsoidal inclusion of case 4."""
+    return ((x - 7.5) / 7.5) ** 2 + (y / 5.) ** 2 + ((z + 12.) / 5.5) ** 2 <= 1.
+
+
 def true_model(grid, case=2):
-    Z = grid.mesh()[2]
-    p = layered(Z) if case == 3 else profile(Z)
+    X, Y, Z = grid.mesh()
+    p = layered(Z) if case in (3, 4) else profile(Z)
+    if case == 4:
+        p[inclusion(X, Y, Z)] = 156.8e6
     return p.copy(), p.copy(), np.full(grid.shape, RHO)
 
 
@@ -43,10 +52,10 @@ def homogeneous(grid, value=80e6):
 
 def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=None):
     """case 1: 24 x 24 x 45 m, 1 m elements (0.5 m for the data), 5 m PML.
-    cases 2 and 3: 40 x 40 x 45 m, 1.25 m elements, 6.25 m PML. Quadratic elements (ngll = 3),
+    cases 2 to 4: 40 x 40 x 45 m, 1.25 m elements, 6.25 m PML. Quadratic elements (ngll = 3),
     T = 0.5 s unless sim_time is given. Deviation from the paper: SEM3D's Newmark scheme diverges
     at Fathi's time steps (Runge-Kutta 4: 9e-4 and 1e-3 s); we use 4.5e-4 s (case 1, 2.25e-4 s for
-    the fine data) and 6.25e-4 s (cases 2 and 3), i.e. a Courant number of about 0.4."""
+    the fine data) and 6.25e-4 s (cases 2 to 4), i.e. a Courant number of about 0.4."""
     if case == 1:
         half, depth, zone = 12., 45., 11.
         h = 0.5 if fine else 1.

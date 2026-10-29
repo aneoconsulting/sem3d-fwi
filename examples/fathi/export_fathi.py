@@ -1,5 +1,5 @@
 """Gather the results of the Fathi test cases into one JSON file:
-table 2 (case 1), histories and profiles (cases 2 and 3), pulses and spectra, traces.
+table 2 (case 1), histories and profiles (cases 2 to 4), pulses and spectra, traces.
 
     python export_fathi.py [--out $SEMFWI_RUNS/fathi/summary.json]
 """
@@ -10,15 +10,17 @@ import os
 
 import numpy as np
 
-from fathi import PULSES, homogeneous, layered, make_config, profile, pulse, true_model
+from fathi import PULSES, homogeneous, make_config, pulse, true_model
 from run_fathi2 import config
 from semfwi import sem_io
 from semfwi.config import RUNS_DIR
 from semfwi.problem import Problem
 
 ROOT = os.path.join(RUNS_DIR, "fathi")
-PROFILE_XY = [(0., 0.), (10., 10.), (20., 20.)]
-NAMES = {2: ("mu", "lambda", "both", "both_bias"), 3: ("both_bias", "both_bias_test")}
+PROFILE_XY = {2: [(0., 0.), (10., 10.), (20., 20.)], 4: [(7.5, 0.), (7.5, 10.), (20., 20.)]}  # figures of the paper
+PROFILE_XY[3] = PROFILE_XY[2]
+NAMES = {2: ("mu", "lambda", "both", "both_bias"), 3: ("both_bias", "both_bias_test"),
+         4: ("both_bias", "both_bias_noise1", "both_bias_noise5", "both_bias_noise10", "both_bias_noise20")}
 
 
 def pulses():
@@ -70,14 +72,17 @@ def experiment(name, case=2):
     X, Y, Z = cfg.grid.mesh()
     z = cfg.grid.axis(2)
     prof = {}
-    for (px, py) in PROFILE_XY:
+    target = {}
+    for (px, py) in PROFILE_XY[case]:
         i = int(np.argmin(np.abs(cfg.grid.axis(0) - px)))
         j = int(np.argmin(np.abs(cfg.grid.axis(1) - py)))
+        target[f"{px:g},{py:g}"] = (mu_t[i, j, :] / 1e6).round(3).tolist()
         prof[f"{px:g},{py:g}"] = dict(lam=(lam[i, j, :] / 1e6).round(3).tolist(),
                                       mu=(mu[i, j, :] / 1e6).round(3).tolist())
     j0 = int(np.argmin(np.abs(cfg.grid.axis(1) - 0.)))
     sl = dict(x=cfg.grid.axis(0).tolist(), z=z.tolist(),
-              lam=(lam[:, j0, :].T / 1e6).round(2).tolist(), mu=(mu[:, j0, :].T / 1e6).round(2).tolist())
+              lam=(lam[:, j0, :].T / 1e6).round(2).tolist(), mu=(mu[:, j0, :].T / 1e6).round(2).tolist(),
+              target=(mu_t[:, j0, :].T / 1e6).round(2).tolist())
     # observed, initial and final traces at a few stations (vertical component)
     waves = {}
     first = [d for d in sorted(glob.glob(f"{work}/initial_fwd/s0/fwd")) if os.path.isdir(f"{d}/traces")]
@@ -102,7 +107,7 @@ def experiment(name, case=2):
     except Exception as e:  # the traces are only a complement
         waves["error"] = str(e)
     return dict(history=hist, z=z.tolist(), profiles=prof,
-                target={"mu": ((layered if case == 3 else profile)(z) / 1e6).round(3).tolist()}, slice=sl, waves=waves)
+                target={"mu": target["20,20"], "profiles": target}, slice=sl, waves=waves)
 
 
 def initial_forward(name, case=2):
@@ -136,7 +141,7 @@ def main():
         for case, names in NAMES.items():
             for name in names:
                 initial_forward(name, case)
-    out = dict(pulses=pulses(), case1=case1(), case2={}, case3={})
+    out = dict(pulses=pulses(), case1=case1(), case2={}, case3={}, case4={})
     for case, names in NAMES.items():
         for name in names:
             e = experiment(name, case)
