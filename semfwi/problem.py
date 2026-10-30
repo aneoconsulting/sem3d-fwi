@@ -140,7 +140,7 @@ class Problem:
             results[job.index] = r
         self.nsim += len(jobs) * (2 if grad else 1)
         u = np.stack([r["u"] for r in results])
-        J = misfit.cost(u, self.dobs, self.cfg.dt)
+        J = misfit.cost(u, self.dobs, self.cfg.dt, self.cfg.weights)
         if not grad:
             return J, u, None
         gl = sum(r["gl"] for r in results)
@@ -157,6 +157,8 @@ class Problem:
             h.update(np.ascontiguousarray(self.dobs[i]).tobytes())
             d = config.to_dict(self.cfg)
             h.update(json.dumps([d["adjoint"], d["receiver_grid"]]).encode())
+            if d["weights"] is not None:  # keeps the keys of the results computed without weights
+                h.update(json.dumps(d["weights"]).encode())
         return h.hexdigest()
 
     def _cached(self, tag, i, key):

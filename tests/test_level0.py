@@ -35,6 +35,24 @@ def test_cost_and_residual():
     assert np.isclose(fd, dt * np.sum(misfit.residual(u, d) * du))
 
 
+def test_weighted_cost_and_residual():
+    u, d = RNG.standard_normal((2, 3, 40, 3))
+    dt = 2e-3
+    w = RNG.random((3, 3))
+    w[1] = 0.
+    # residual weighted for the adjoint sources: derivative of the weighted J with respect to u
+    du = RNG.standard_normal(u.shape)
+    h = 1e-6
+    fd = (misfit.cost(u + h * du, d, dt, w) - misfit.cost(u - h * du, d, dt, w)) / (2 * h)
+    assert np.isclose(fd, dt * np.sum(misfit.residual(u, d, w) * du))
+    # a zero weight removes the station; weights 1 change nothing; one source or several
+    u2 = u.copy()
+    u2[1] += 1.
+    assert np.isclose(misfit.cost(u2, d, dt, w), misfit.cost(u, d, dt, w))
+    assert np.isclose(misfit.cost(u, d, dt, np.ones((3, 3))), misfit.cost(u, d, dt))
+    assert np.isclose(misfit.cost(np.stack([u, u]), np.stack([d, d]), dt, w), 2 * misfit.cost(u, d, dt, w))
+
+
 def test_trilinear_exact_on_linear_fields():
     g = Grid()
     pts = np.array(g.xmin) + RNG.random((200, 3)) * (np.array(g.xmax) - np.array(g.xmin))

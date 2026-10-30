@@ -50,6 +50,8 @@ class Config:
     # "extended" (3 extended sources on the station grid receiver_grid = (xs, ys, z))
     adjoint: str = "points"
     receiver_grid: tuple = None
+    # Misfit weights, one per station and component (nsta x 3); None: all 1 (misfit.cost)
+    weights: list = None
     # Time: dt is imposed (M1), courant only serves as a stability bound
     sim_time: float = 0.7
     dt: float = 8e-4

@@ -58,7 +58,7 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
 def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
     """Adjoint simulation and kernels projected on the grid: (gl, gm)."""
     prepare_adjoint(dadj, dfwd)
-    tau, hist = misfit.adjoint_history(misfit.residual(u, dobs), cfg.dt)
+    tau, hist = misfit.adjoint_history(misfit.residual(u, dobs, cfg.weights), cfg.dt)
     srcs = sem_io.write_adjoint_sources(dadj, cfg, tau, hist)
     sem_io.write_input(dadj, cfg, srcs, save_strain=True)
     runner.run(dadj)

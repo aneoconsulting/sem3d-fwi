@@ -50,12 +50,13 @@ export HDF5_LIB=~/install/hdf5-1.14/lib
 | `model`    | parameter grid, Lambda/Mu/Rho files, trilinear interpolation |
 | `sem_io`   | writing SEM3D inputs, reading traces, the log and strains |
 | `runner`   | single mesh, launching simulations, cache, parallel execution |
-| `misfit`   | residuals, misfit function, adjoint source time histories |
+| `misfit`   | residuals, misfit function (optional weights per station and component, `Config.weights`), adjoint source time histories |
 | `gradient` | K_lambda and K_mu kernels and projection onto the parameter grid |
 | `task`     | one source end to end: forward, residual, adjoint, kernels |
 | `backend`  | source execution: `LocalBackend` (local machine) |
 | `problem`  | J(x) and grad J(x) over all sources (`Problem.evaluate`) |
 | `optim`    | L-BFGS with Armijo line search, checkpoint and restart |
+| `hessian`  | Hessian-vector products from two gradients, point-spread functions, low-rank Hessian |
 | `armonik_*`| ArmoniK backend (client), worker and the contract between them |
 
 For each source, a gradient evaluation runs a forward simulation (traces and strains),
@@ -84,6 +85,7 @@ instead of one.
   python examples/fathi/run_fathi2.py both --case 3 [--stages p20:310 p30:550 p40:252] [--bias 15]
   python examples/fathi/run_fathi2.py both --case 4 [--stages p20:410 p30:320 p40:430] [--bias 50] [--noise 0.05]
   python examples/fathi/export_fathi.py                        # results -> summary.json
+  python examples/fathi/psf.py --case 3 [--depths 3 8 15 25]   # point-spread functions, true model
   ```
   `--precond block|depth` (not in the paper) scales the L-BFGS directions: same norm for the
   lambda and mu blocks, and with `depth` a compensation of the sensitivity loss with depth.
@@ -91,6 +93,7 @@ instead of one.
   table at -10 m below which lambda is 5 times mu: the interfaces of lambda and mu differ.
   ```
   python examples/nappe/run_nappe.py both [--stages p20:20] [--bias 10] [--precond depth]
+  python examples/nappe/psf_nappe.py [--depths 3 8 12 15 25]
   ```
 
 ## ArmoniK
