@@ -46,6 +46,10 @@ class Config:
     npml: int = 1
     # Strain output: one step every strain_period (the number of steps must be a multiple of it)
     strain_period: int = 1
+    # Kernels computed by SEM3D during the adjoint simulation (strain_mode 1 and 2): the forward
+    # simulation writes displacements, 6 times smaller than strains, and no adjoint strain is
+    # written. SEMFWI_KERNELS_IN_SEM=0 falls back to the strain files and the kernels in Python.
+    kernels_in_sem: bool = os.environ.get("SEMFWI_KERNELS_IN_SEM", "1") != "0"
     # Adjoint sources: "points" (one func = file source per station and component) or
     # "extended" (3 extended sources on the station grid receiver_grid = (xs, ys, z))
     adjoint: str = "points"

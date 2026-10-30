@@ -60,6 +60,16 @@ def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
     prepare_adjoint(dadj, dfwd)
     tau, hist = misfit.adjoint_history(misfit.residual(u, dobs, cfg.weights), cfg.dt)
     srcs = sem_io.write_adjoint_sources(dadj, cfg, tau, hist)
+    if any(fn.startswith("disp.") for fn in os.listdir(f"{dfwd}/strain")):
+        # the forward simulation wrote displacements (strain_mode = 1): SEM3D computes the kernels
+        # the adjoint traces are not used: not recorded
+        sem_io.write_input(dadj, cfg, srcs, save_strain=True, strain_mode=2, traces=False)
+        link = f"{dadj}/fwd_strain"
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(os.path.realpath(f"{dfwd}/strain"), link)
+        runner.run(dadj)
+        return gradient.kernels_from_sem(cfg.grid, dadj)
     sem_io.write_input(dadj, cfg, srcs, save_strain=True)
     runner.run(dadj)
     jobs = [(cfg.grid, dfwd, dadj, cfg.dt, 3e7, [r]) for r in range(cfg.nprocs)]

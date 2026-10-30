@@ -44,3 +44,16 @@ def kernels(grid, dfwd, dadj, dt, mem=2e8, ranks=None):
         gl += model.project(grid, wf * Kl, idx, w)
         gm += model.project(grid, wf * Km, idx, w)
     return gl, gm
+
+
+def kernels_from_sem(grid, dadj):
+    """dJ/dlambda and dJ/dmu on the grid from the kernels accumulated by SEM3D during the adjoint
+    simulation (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points."""
+    gl = np.zeros(grid.shape)
+    gm = np.zeros(grid.shape)
+    for rank, coords, weight in sem_io.read_strain_geom(dadj):
+        K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(2, -1)
+        idx, w = model.trilinear(grid, coords)
+        gl += model.project(grid, weight * K[0], idx, w)
+        gm += model.project(grid, weight * K[1], idx, w)
+    return gl, gm

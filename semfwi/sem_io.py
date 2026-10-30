@@ -29,7 +29,7 @@ def _section(s):
     return name + " {\n" + "".join(f"    {k} = {v};\n" for k, v in s.items()) + "};\n"
 
 
-def write_input(d, cfg, sources, save_strain=False):
+def write_input(d, cfg, sources, save_strain=False, strain_mode=0, traces=True):
     with open(f"{d}/stations.txt", "w") as f:
         for s in cfg.stations:
             f.write("%r %r %r\n" % tuple(float(x) for x in s))
@@ -43,7 +43,7 @@ dim = 3;
 mpml_atn_param = 0.002;
 ngll = {cfg.ngll};
 snapshots {{ save_snap = false; }};
-save_traces = true;
+save_traces = {'true' if traces else 'false'};
 traces_format = hdf5;
 prorep = false;
 {src}
@@ -68,6 +68,7 @@ out_variables {{
     edev = 0; sdev = 0;
 }};
 {f"save_strain = true; strain_period = {cfg.strain_period};" if save_strain else ""}
+{f"strain_mode = {strain_mode};" if save_strain and strain_mode else ""}
 """)
 
 
@@ -192,6 +193,20 @@ def read_traces(d, nsta):
                     out[int(k[3:])] = f[k][:, 1:4]
     assert sorted(out) == list(range(nsta)), sorted(out)
     return np.stack([out[i] for i in range(nsta)])
+
+
+def read_strain_geom(d):
+    """Strain points per rank: list of (rank string, coords (npts,3), weight (npts)), ranks without
+    points skipped."""
+    out = []
+    for fn in sorted(os.listdir(f"{d}/strain")):
+        if not fn.startswith("strain_geom."):
+            continue
+        with h5py.File(f"{d}/strain/{fn}", "r") as f:
+            if int(f.attrs["npts"]) == 0:
+                continue
+            out.append((fn.split(".")[1], f["coords"][...], f["weight"][...]))
+    return out
 
 
 def read_strain(d):

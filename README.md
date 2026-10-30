@@ -13,6 +13,8 @@ kernels and the gradient, and drives the optimization (L-BFGS, Armijo line searc
   - #6: receiver location;
   - #7: imposed time step, `time_scheme { dt = ...; }` (merged);
   - #9: strain output, `save_strain` and `strain_period`;
+  - branch `perf-graviton` of `~/SEM`: kernels computed during the adjoint simulation
+    (`strain_mode`, used by default) and faster ngll = 3 simulations;
   - #8 (sources on a fluid-solid interface) is only needed for those cases;
 - OpenMPI and HDF5 (the ones SEM3D was compiled with).
 
@@ -31,6 +33,7 @@ Environment variables:
 | `MPI_LIB`     | MPI libraries, prepended to `LD_LIBRARY_PATH`            | —               |
 | `HDF5_LIB`    | HDF5 libraries, prepended to `LD_LIBRARY_PATH`           | —               |
 | `SEMFWI_RUNS` | root of the examples' run directories                    | `~/SEM/exp/runs` |
+| `SEMFWI_KERNELS_IN_SEM` | `0`: kernels computed in Python from the strain files (SEM3D without `strain_mode`) | `1` |
 
 `SEM3D_BIN` has no default: a `sem3d.exe` found in `PATH` might not have the strain
 output. Without it, the simulations stop with a message and the test that runs SEM3D is
@@ -41,6 +44,11 @@ export SEM3D_BIN=~/install/sem3d-adjoint/bin
 export MPI_BIN=/usr/lib64/openmpi/bin MPI_LIB=/usr/lib64/openmpi/lib
 export HDF5_LIB=~/install/hdf5-1.14/lib
 ```
+
+SEM3D build options for ngll = 3 (a factor 1.5 on the simulations, same results):
+`-DCMAKE_BUILD_TYPE=Release -DOPT_VEC=8 -DOPT_MIN_GLL_OPT=3`, and `-mcpu=native` in the
+Fortran flags on the machine that runs it. With the kernels in SEM3D, one evaluation of
+case 3 of Fathi (J and gradient, 4 cores of a Graviton) takes 46 s instead of 155 s.
 
 ## `semfwi` package
 

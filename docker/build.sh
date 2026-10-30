@@ -6,7 +6,7 @@
 #   docker/build.sh --tag 0.2.0
 #
 # SEM3D is a copy of the sources (git archive) of SEM_SRC (default ~/SEM) at revision SEM_REF
-# (default adjoint). HDF5_TARBALL: HDF5 1.14 sources (default ~/install/src/hdf5-1.14.3.tar.gz,
+# (default perf-graviton). HDF5_TARBALL: HDF5 1.14 sources (default ~/install/src/hdf5-1.14.3.tar.gz,
 # downloaded otherwise).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 sem_src=${SEM_SRC:-$HOME/SEM}
-sem_ref=${SEM_REF:-adjoint}
+sem_ref=${SEM_REF:-perf-graviton}
 hdf5=${HDF5_TARBALL:-$HOME/install/src/hdf5-1.14.3.tar.gz}
 hdf5_url=https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.14/hdf5-1.14.3/src/hdf5-1.14.3.tar.gz
 

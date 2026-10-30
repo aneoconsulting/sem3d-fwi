@@ -320,3 +320,26 @@ def test_run_source_errors(tmp_path, monkeypatch):
     with pytest.raises(task.TaskError):
         task.run_source(cfg, R(str(adj)), str(fwd), str(adj), np.zeros((1, cfg.nt, 3)), True)
     assert not (fwd / "strain").exists() and not (adj / "strain").exists()
+
+
+def test_kernels_in_sem_match_python(tmp_path):
+    """Kernels accumulated by SEM3D during the adjoint simulation (strain_mode 1 and 2) equal those
+    computed in Python from the forward and adjoint strains, to rounding."""
+    from semfwi.backend import Job, LocalBackend
+    out = {}
+    for mode in (0, 1):
+        cfg = Config(workdir=str(tmp_path / f"m{mode}"), sim_time=0.1, stations=[(262., 233., 0.), (121., 297., 0.)],
+                     sources=[sem_io.point_source((163., 181., -77.), (1., 0., 0.), func="ricker", tau=0.05,
+                                                  freq=10.)])
+        runner = Runner(cfg)
+        d = str(tmp_path / f"m{mode}" / "fwd")
+        runner.prepare(d)
+        one = np.ones(cfg.grid.shape)
+        model.write_model(d, cfg.grid, cfg.lam0 * one, cfg.mu0 * (one + 0.05), cfg.rho0 * one)
+        sem_io.write_input(d, cfg, cfg.sources, save_strain=True, strain_mode=mode)
+        dobs = np.random.default_rng(1).standard_normal((2, cfg.nt, 3)) * 1e-9
+        out[mode] = LocalBackend().run(cfg, runner, [Job(0, d, str(tmp_path / f"m{mode}" / "adj"), dobs, True)])[0]
+    assert np.array_equal(out[0]["u"], out[1]["u"])
+    for k in ("gl", "gm"):
+        assert np.allclose(out[1][k], out[0][k], rtol=1e-12, atol=1e-12 * np.abs(out[0][k]).max()), k
+    assert np.abs(out[1]["gm"]).max() > 0

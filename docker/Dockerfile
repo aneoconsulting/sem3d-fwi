@@ -39,7 +39,9 @@ COPY docker/vendor/sem3d.tar /src/
 WORKDIR /src/sem
 RUN tar xf /src/sem3d.tar
 RUN cmake -S . -B build \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DOPT_VEC=8 \
+        -DOPT_MIN_GLL_OPT=3 \
         -DOPT_MPI=ON \
         -DCMAKE_C_COMPILER=mpicc \
         -DCMAKE_CXX_COMPILER=mpicxx \

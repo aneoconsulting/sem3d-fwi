@@ -127,7 +127,8 @@ class Problem:
             d = self._dir(tag, i, "fwd")
             self.runner.prepare(d)
             self._write_model(d, lam, mu, rho)
-            sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]), save_strain=grad)
+            sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]), save_strain=grad,
+                              strain_mode=1 if self.cfg.kernels_in_sem else 0)
             key = self._key(d, i, grad)
             results[i] = self._cached(tag, i, key)
             if results[i] is None:
