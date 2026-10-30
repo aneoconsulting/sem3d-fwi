@@ -44,13 +44,14 @@ SIM_TIME[4] = SIM_TIME[3]
 @dataclass
 class Case:
     """What differs between the test cases: where the runs go, the true model (grid -> lambda, mu,
-    rho), the simulated time per pulse (0.5 s if absent), the geometry of make_config and the
-    default regularization."""
+    rho), the simulated time per pulse (0.5 s if absent), the geometry of make_config, the
+    default regularization and the initial model (homogeneous 80 MPa, as in the paper)."""
     root: str
     true_model: Callable
     sim_time: dict
     geometry: int = 2
     reg: str = "tv"
+    initial: Callable = homogeneous  # initial model, grid -> lambda, mu, rho
 
 
 def fathi_case(n):
@@ -232,7 +233,7 @@ def invert(args, case):
         cfg = config(f"{work}/{pn}", case, pn)
         runner = Runner(cfg)
         lam_t, mu_t, rho = case.true_model(cfg.grid)
-        lam0, mu0, _ = homogeneous(cfg.grid)
+        lam0, mu0, _ = case.initial(cfg.grid)
         t0 = time.time()
         dobs = add_noise(observed(pn, case), args.noise, seed=list(PULSES).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)

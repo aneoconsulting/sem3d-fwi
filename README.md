@@ -91,8 +91,11 @@ instead of one.
   lambda and mu blocks, and with `depth` a compensation of the sensitivity loss with depth.
 - `examples/nappe`: our case, not in the paper. Fathi's geometry and three layers, with a water
   table at -10 m below which lambda is 5 times mu: the interfaces of lambda and mu differ.
+  `--variant lens`: lambda = 3 mu only in a saturated lens between -16 and -10 m;
+  `--variant smooth`: the water table, starting from the true model smoothed along z.
   ```
   python examples/nappe/run_nappe.py both [--stages p20:20] [--bias 10] [--precond depth]
+  python examples/nappe/run_nappe.py both --variant lens|smooth [--tag name] ...
   python examples/nappe/psf_nappe.py [--depths 3 8 12 15 25]
   ```
 

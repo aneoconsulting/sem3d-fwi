@@ -4,6 +4,8 @@ in Fathi's case 3). Runs in $SEMFWI_RUNS/nappe/<name>.
 
     python run_nappe.py both --stages p20:20 --bias 10      # Fathi's strategy
     python run_nappe.py both --stages p20:20                # without the bias
+    python run_nappe.py both --variant lens ...             # saturated lens, in $SEMFWI_RUNS/nappe_lens
+    python run_nappe.py both --variant smooth --tag ...     # water table, smoothed true initial model
 """
 import os
 import sys
@@ -14,6 +16,14 @@ from run_fathi2 import SIM_TIME, Case, invert, parser  # noqa: E402
 from semfwi.config import RUNS_DIR  # noqa: E402
 
 CASE = Case(os.path.join(RUNS_DIR, "nappe"), nappe.true_model, SIM_TIME[3], geometry=3, reg="tv")
+CASES = {"nappe": CASE,
+         "lens": Case(os.path.join(RUNS_DIR, "nappe_lens"), nappe.lens_model, SIM_TIME[3], geometry=3, reg="tv"),
+         # same data as "nappe" (same root): use --tag to keep the runs apart
+         "smooth": Case(CASE.root, nappe.true_model, SIM_TIME[3], geometry=3, reg="tv",
+                        initial=nappe.smoothed_start)}
 
 if __name__ == "__main__":
-    invert(parser().parse_args(), CASE)
+    ap = parser()
+    ap.add_argument("--variant", choices=tuple(CASES), default="nappe")
+    args = ap.parse_args()
+    invert(args, CASES[args.variant])
