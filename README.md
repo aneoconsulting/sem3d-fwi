@@ -13,8 +13,8 @@ kernels and the gradient, and drives the optimization (L-BFGS, Armijo line searc
   - #6: receiver location;
   - #7: imposed time step, `time_scheme { dt = ...; }` (merged);
   - #9: strain output, `save_strain` and `strain_period`;
-  - branch `perf-graviton` of `~/SEM`: kernels computed during the adjoint simulation
-    (`strain_mode`, used by default) and faster ngll = 3 simulations;
+  - kernels computed during the adjoint simulation (`strain_mode`, used by default) and
+    faster ngll = 3 simulations (branch `adjoint` of `~/SEM`, not proposed upstream yet);
   - #8 (sources on a fluid-solid interface) is only needed for those cases;
 - OpenMPI and HDF5 (the ones SEM3D was compiled with).
 
