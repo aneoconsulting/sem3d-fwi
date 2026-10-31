@@ -64,7 +64,7 @@ def simulate(name):
     runner.prepare(d)
     lam, mu, rho = true_model(cfg.grid, 3)
     model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
-    model.write_pml_materials(d, cfg, lam, mu, rho)
+    model.write_pml_copy(d)
     sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, cfg.sources))
     if cpml:
         with open(f"{d}/input.spec", "a") as f:

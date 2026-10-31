@@ -123,7 +123,7 @@ def initial_forward(name, case=2):
     active = {"mu": ("b",), "lambda": ("a",)}.get(name.split("_")[0], ("a", "b"))
     runner = Runner(cfg)
     runner.mesh_dir = f"{work}/{pn}/mesh"
-    pb = Problem(cfg, runner, None, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t), pml="follow")
+    pb = Problem(cfg, runner, None, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t))
     d = f"{work}/initial_fwd/s0/fwd"
     runner.prepare(d)
     lam, mu, _ = pb.to_model(np.zeros(pb.size))

@@ -1,4 +1,6 @@
 """Model on the parameter grid, SEM3D material.spec files and trilinear interpolation."""
+import os
+
 import h5py
 import numpy as np
 
@@ -9,6 +11,14 @@ spacedef = file;
 filename0 = "Lambda.h5";
 filename1 = "Mu.h5";
 filename2 = "Rho.h5";
+}};
+"""
+
+
+# PML material: SEM3D copies the definition of material 0 (the model files) and samples them on the
+# inner edge of the PML, which extends the model into the PML point by point
+PML_COPY_SPEC = """material {num} {{
+copy = 0;
 }};
 """
 
@@ -35,6 +45,19 @@ def write_model(d, grid, lam, mu, rho, nmat=1):
             g.attrs["xMaxGlob"] = np.array(grid.xmax, dtype="f8")
     with open(f"{d}/material.spec", "w") as f:
         f.write("".join(MATERIAL_SPEC.format(num=k) for k in range(nmat)))
+
+
+def write_pml_copy(d):
+    """Appends to material.spec, written by write_model, a copy of material 0 for each PML material
+    of material.input: the PMLs then extend the current model, as in Fathi et al. Without
+    material.input (no mesh in d, as in the unit tests), there is nothing to extend."""
+    if not os.path.exists(f"{d}/material.input"):
+        return
+    lines = open(f"{d}/material.input").read().splitlines()
+    nmat = int(lines[0])
+    pml = [i - 1 for i in range(1, nmat + 1) if lines[i].startswith("P")]
+    with open(f"{d}/material.spec", "a") as f:
+        f.write("".join(PML_COPY_SPEC.format(num=k) for k in pml))
 
 
 def write_pml_materials(d, cfg, lam, mu, rho):

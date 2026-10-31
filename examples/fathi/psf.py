@@ -14,10 +14,11 @@ Results in $SEMFWI_RUNS/fathi/case<n>/psf_<pulse>/psf.npz (v and H v per bump) a
   zhalf : depth extent where |H v| in the bump's block exceeds half its maximum, on the vertical
           through the bump (vertical resolution).
 
-The PMLs are frozen at the true model (--pml fixed, default): with --pml follow, as in the
-inversions, a bump changes the PML properties of its layer but the gradient ignores that dependence,
-so the products are not those of a symmetric Hessian (sym 3.2 instead of 0.45 for the water table at
-30 m, symn 0.41 instead of 0.05).
+The PMLs extend the model point by point (--pml copy, default, as in the inversions): a bump inside
+the domain does not reach them. With --pml follow, each PML takes the mean of its mesh layer, so a
+bump changes the PMLs of its layer but the gradient ignores that dependence, and the products are not
+those of a symmetric Hessian (sym 3.2 instead of 0.45 for the water table at 30 m, symn 0.41 instead
+of 0.05 with the PMLs frozen at the true model, --pml fixed).
 """
 import argparse
 
@@ -36,7 +37,7 @@ def run(args, case):
         cfg.strain_period = args.period
     lam_t, mu_t, rho = case.true_model(cfg.grid)
     pb = Problem(cfg, Runner(cfg), observed(args.pulse, case), lam_t, mu_t, rho, active=("a", "b"),
-                 fixed=(lam_t, mu_t), pml="follow" if args.pml == "follow" else (lam_t, mu_t, rho))
+                 fixed=(lam_t, mu_t), pml=(lam_t, mu_t, rho) if args.pml == "fixed" else args.pml)
     x = np.zeros(pb.size)  # relative to the true model
     H = Hessian(pb, x, "psf", dx=args.dx, central=args.central)
     if not args.central:
@@ -69,8 +70,9 @@ def add_options(ap):
     ap.add_argument("--central", action="store_true", help="central differences (two gradients per product)")
     ap.add_argument("--period", type=int, default=0, help="strain output period (default: the case's)")
     ap.add_argument("--tag", default="", help="suffix of the result directory psf_<pulse>_<tag>")
-    ap.add_argument("--pml", choices=("fixed", "follow"), default="fixed",
-                    help="PMLs frozen at the true model, or following the model as in the inversions")
+    ap.add_argument("--pml", choices=("copy", "fixed", "follow"), default="copy",
+                    help="PMLs extending the model point by point (copy), frozen at the true model, "
+                         "or taking the mean of their mesh layer (follow)")
 
 
 if __name__ == "__main__":

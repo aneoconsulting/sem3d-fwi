@@ -10,9 +10,12 @@ nodes close to the PMLs stay fixed. SEM3D always reads lambda and mu; for veloci
 follows from the chain rule:
   dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda).
 
-pml: None (mesher properties), "follow" (the current model is extended into the PMLs, layer
-by layer, as in Fathi et al.) or a fixed (lam, mu, rho). The gradient ignores the dependence of the
-PMLs on the model (it is restricted to the interior domain, as in the paper).
+pml: "copy" (default: SEM3D extends the current model into the PMLs point by point, from the inner
+edge of each PML, as in Fathi et al.), "follow" (each PML takes the mean of its mesh layer, so a
+perturbation anywhere in a layer changes its PMLs), None (mesher properties) or a fixed
+(lam, mu, rho). The gradient ignores the dependence of the PMLs on the model (it is restricted to
+the interior domain, as in the paper); with "copy", only the nodes on the edge of the domain act on
+the PMLs.
 
 Run directories are prepared here; simulations and kernels are computed by the
 backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
@@ -30,7 +33,7 @@ from .backend import Job, LocalBackend
 
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
-                 fixed=None, pml=None, backend=None):
+                 fixed=None, pml="copy", backend=None):
         assert param in ("lame", "vel"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
@@ -110,7 +113,9 @@ class Problem:
 
     def _write_model(self, d, lam, mu, rho):
         model.write_model(d, self.cfg.grid, lam, mu, rho, nmat=len(self.cfg.layer_list))
-        if self.pml == "follow":
+        if self.pml == "copy":
+            model.write_pml_copy(d)
+        elif self.pml == "follow":
             model.write_pml_materials(d, self.cfg, lam, mu, rho)
         elif self.pml is not None:
             model.write_pml_materials(d, self.cfg, *self.pml)

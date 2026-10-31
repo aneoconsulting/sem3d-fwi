@@ -74,7 +74,7 @@ def observed(pulse_name, case):
         return sem_io.read_traces(d, len(cfg.stations))[None]
     runner.prepare(d)
     model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
-    model.write_pml_materials(d, cfg, lam, mu, rho)
+    model.write_pml_copy(d)
     sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, cfg.sources))
     runner.run(d)
     return sem_io.read_traces(d, len(cfg.stations))[None]
@@ -197,6 +197,9 @@ def parser():
     ap.add_argument("--wp", nargs=2, type=float, default=(0.5, 0.3))
     ap.add_argument("--tag", default=None)
     ap.add_argument("--precond", choices=("none", "block", "depth"), default="none")
+    ap.add_argument("--pml", choices=("copy", "follow", "true"), default="copy",
+                    help="PML properties: the model extended point by point by SEM3D (copy), the mean of "
+                         "each mesh layer (follow), or frozen at the true model (true)")
     return ap
 
 
@@ -237,7 +240,8 @@ def invert(args, case):
         t0 = time.time()
         dobs = add_noise(observed(pn, case), args.noise, seed=list(PULSES).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
-        pb = Problem(cfg, runner, dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t), pml="follow")
+        pb = Problem(cfg, runner, dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t),
+                     pml=(lam_t, mu_t, rho) if args.pml == "true" else args.pml)
         pb.nsim = history[-1]["nsim"] if history else 0  # cumulative count, including before a restart
         reg = TotalVariation(pb, args.eps) if reg_kind == "tv" else Tikhonov(pb)
         if x is None:
