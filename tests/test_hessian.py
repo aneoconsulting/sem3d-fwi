@@ -39,6 +39,32 @@ def test_hessian_vector_product():
     assert pb.tags == ["h/g0", "h/hv000", "h/hv001"]
 
 
+def test_hessian_vector_product_central():
+    """Central differences: two gradients per product, no gradient at x; exact on a cubic J up to
+    second order, where the one-sided product is off by O(eps)."""
+    n = 20
+    A = spd(n)
+    c = RNG.standard_normal(n)
+
+    class Cubic(Quadratic):
+        def evaluate(self, x, tag, grad=True):
+            self.tags.append(tag)
+            r = x - self.x0
+            return None, None, self.A @ r + 3 * (c @ r) ** 2 * c  # gradient of 1/2 r^T A r + (c.r)^3
+
+    x0 = RNG.standard_normal(n)
+    x = x0 + RNG.standard_normal(n)
+    exact = lambda v: A @ v + 6 * (c @ (x - x0)) * (c @ v) * c
+    v = RNG.standard_normal(n)
+    pb = Cubic(A, x0)
+    Hc = hessian.Hessian(pb, x, "c", dx=1e-2, central=True)
+    Hf = hessian.Hessian(Cubic(A, x0), x, "f", dx=1e-2)
+    ec = np.linalg.norm(Hc(v) - exact(v)) / np.linalg.norm(exact(v))
+    ef = np.linalg.norm(Hf(v) - exact(v)) / np.linalg.norm(exact(v))
+    assert ec < 1e-10 < ef
+    assert pb.tags == ["c/hv000p", "c/hv000m"]
+
+
 def test_low_rank():
     n, k = 40, 6
     A = spd(n, rank=k)

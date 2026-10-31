@@ -3,7 +3,8 @@ to SEM3D): Hessian-vector products, point-spread functions and a low-rank approx
 
 H v ~ (g(x + eps v) - g(x)) / eps, with eps = dx / max|v|: the model changes by at most dx (relative
 perturbation, x is relative to the reference model). Each product costs one gradient (forward and
-adjoint simulations of every source). At the true model with noise-free data, the residuals and
+adjoint simulations of every source); with central=True, H v ~ (g(x + eps v) - g(x - eps v)) / 2 eps,
+two gradients, second-order accurate. At the true model with noise-free data, the residuals and
 g(x) vanish and H is the Gauss-Newton Hessian, the one used to judge an acquisition design.
 
 A point-spread function is H v for a bump v around one node of one parameter: its spread shows the
@@ -14,10 +15,10 @@ import numpy as np
 
 class Hessian:
     """v -> H v at model x. g0: gradient at x if already known (otherwise computed by the first
-    product). The simulations go to workdir/tag/hv{k}."""
+    one-sided product). The simulations go to workdir/tag/hv{k} (hv{k}p and hv{k}m if central)."""
 
-    def __init__(self, pb, x, tag, g0=None, dx=1e-3):
-        self.pb, self.x, self.tag, self.dx = pb, x, tag, dx
+    def __init__(self, pb, x, tag, g0=None, dx=1e-3, central=False):
+        self.pb, self.x, self.tag, self.dx, self.central = pb, x, tag, dx, central
         self.g0 = g0
         self.count = 0
 
@@ -27,10 +28,15 @@ class Hessian:
         return self.g0
 
     def __call__(self, v):
-        g0 = self.gradient()
         eps = self.dx / np.max(np.abs(v))
-        _, _, g = self.pb.evaluate(self.x + eps * v, f"{self.tag}/hv{self.count:03d}")
+        k = self.count
         self.count += 1
+        if self.central:
+            _, _, gp = self.pb.evaluate(self.x + eps * v, f"{self.tag}/hv{k:03d}p")
+            _, _, gm = self.pb.evaluate(self.x - eps * v, f"{self.tag}/hv{k:03d}m")
+            return (gp - gm) / (2 * eps)
+        g0 = self.gradient()
+        _, _, g = self.pb.evaluate(self.x + eps * v, f"{self.tag}/hv{k:03d}")
         return (g - g0) / eps
 
 

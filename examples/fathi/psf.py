@@ -3,15 +3,21 @@ the 3-component surface receivers resolve, and how much of a lambda perturbation
 the other way round. One Hessian-vector product (one gradient) per bump, plus the gradient at the
 true model.
 
-    python psf.py --case 3 [--pulse p20] [--depths 3 8 15 25] [--width 1]
+    python psf.py --case 3 [--pulse p20] [--depths 3 8 15 25] [--width 1] [--central] [--period 8]
 
 Results in $SEMFWI_RUNS/fathi/case<n>/psf_<pulse>/psf.npz (v and H v per bump) and printed:
   same  : ||H v|| in the block of the bump (sensitivity there),
   cross : ||H v|| in the other block / same (lambda-mu crosstalk),
   sym   : |v_i . H v_j - v_j . H v_i| / |v_i . H v_j| between the lambda and mu bumps at the same
-          depth (finite-difference check, H is symmetric),
+          depth (H is symmetric), and the same difference divided by sqrt(v_i.H v_i v_j.H v_j), its
+          Cauchy-Schwarz bound (symn), meaningful when the cross term itself is small,
   zhalf : depth extent where |H v| in the bump's block exceeds half its maximum, on the vertical
           through the bump (vertical resolution).
+
+The PMLs are frozen at the true model (--pml fixed, default): with --pml follow, as in the
+inversions, a bump changes the PML properties of its layer but the gradient ignores that dependence,
+so the products are not those of a symmetric Hessian (sym 3.2 instead of 0.45 for the water table at
+30 m, symn 0.41 instead of 0.05).
 """
 import argparse
 
@@ -24,14 +30,17 @@ from semfwi.runner import Runner
 
 
 def run(args, case):
-    work = f"{case.root}/psf_{args.pulse}"
+    work = f"{case.root}/psf_{args.pulse}" + (f"_{args.tag}" if args.tag else "")
     cfg = config(work, case, args.pulse)
+    if args.period:
+        cfg.strain_period = args.period
     lam_t, mu_t, rho = case.true_model(cfg.grid)
     pb = Problem(cfg, Runner(cfg), observed(args.pulse, case), lam_t, mu_t, rho, active=("a", "b"),
-                 fixed=(lam_t, mu_t), pml="follow")
+                 fixed=(lam_t, mu_t), pml="follow" if args.pml == "follow" else (lam_t, mu_t, rho))
     x = np.zeros(pb.size)  # relative to the true model
-    H = Hessian(pb, x, "psf", dx=args.dx)
-    print(f"[{args.pulse}] |g(x_true)| = {np.linalg.norm(H.gradient()):.3e}", flush=True)
+    H = Hessian(pb, x, "psf", dx=args.dx, central=args.central)
+    if not args.central:
+        print(f"[{args.pulse}] |g(x_true)| = {np.linalg.norm(H.gradient()):.3e}", flush=True)
     names = {"a": "lambda", "b": "mu"}
     grid = cfg.grid
     z = grid.axis(2)
@@ -51,7 +60,17 @@ def run(args, case):
             np.savez(f"{work}/psf.npz", **out)
         va, ha = out[f"lambda_{depth:g}_v"], out[f"lambda_{depth:g}_hv"]
         vb, hb = out[f"mu_{depth:g}_v"], out[f"mu_{depth:g}_hv"]
-        print(f"  sym z={-depth:.1f}: {abs(va @ hb - vb @ ha) / abs(va @ hb):.2e}", flush=True)
+        d = abs(va @ hb - vb @ ha)
+        print(f"  sym z={-depth:.1f}: {d / abs(va @ hb):.2e}  symn {d / np.sqrt(abs(va @ ha) * abs(vb @ hb)):.2e}", flush=True)
+
+
+def add_options(ap):
+    ap.add_argument("--dx", type=float, default=1e-3, help="largest relative model change per product")
+    ap.add_argument("--central", action="store_true", help="central differences (two gradients per product)")
+    ap.add_argument("--period", type=int, default=0, help="strain output period (default: the case's)")
+    ap.add_argument("--tag", default="", help="suffix of the result directory psf_<pulse>_<tag>")
+    ap.add_argument("--pml", choices=("fixed", "follow"), default="fixed",
+                    help="PMLs frozen at the true model, or following the model as in the inversions")
 
 
 if __name__ == "__main__":
@@ -60,6 +79,6 @@ if __name__ == "__main__":
     ap.add_argument("--pulse", default="p20")
     ap.add_argument("--depths", type=float, nargs="+", default=[3., 8., 15., 25.])
     ap.add_argument("--width", type=float, default=1., help="standard deviation of the bumps (m)")
-    ap.add_argument("--dx", type=float, default=1e-3, help="largest relative model change per product")
+    add_options(ap)
     args = ap.parse_args()
     run(args, fathi_case(args.case))
