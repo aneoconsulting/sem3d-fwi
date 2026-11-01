@@ -29,7 +29,7 @@ def _section(s):
     return name + " {\n" + "".join(f"    {k} = {v};\n" for k, v in s.items()) + "};\n"
 
 
-def write_input(d, cfg, sources, save_strain=False, strain_mode=0, traces=True):
+def write_input(d, cfg, sources, save_strain=False, strain_mode=0, traces=True, strain_pml=False):
     with open(f"{d}/stations.txt", "w") as f:
         for s in cfg.stations:
             f.write("%r %r %r\n" % tuple(float(x) for x in s))
@@ -41,6 +41,7 @@ mesh_file = "mesh4spec";
 mat_file = "material.input";
 dim = 3;
 mpml_atn_param = 0.002;
+{f"pml_damping_vp = {cfg.pml_damping_vp!r};" if cfg.pml_damping_vp else ""}
 ngll = {cfg.ngll};
 snapshots {{ save_snap = false; }};
 save_traces = {'true' if traces else 'false'};
@@ -69,6 +70,7 @@ out_variables {{
 }};
 {f"save_strain = true; strain_period = {cfg.strain_period};" if save_strain else ""}
 {f"strain_mode = {strain_mode};" if save_strain and strain_mode else ""}
+{"strain_pml = true;" if save_strain and strain_mode and strain_pml else ""}
 """)
 
 

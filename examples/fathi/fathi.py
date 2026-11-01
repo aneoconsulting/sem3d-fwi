@@ -80,4 +80,7 @@ def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=
                   layers=[(h, 1)] * nl, npml=int(round(5. / h)) if case == 1 else 5,
                   sim_time=sim_time, dt=dt, courant=1.0, grid=grid, lam0=80e6, mu0=80e6, rho0=RHO,
                   stations=stations, sources=[load], nprocs=nprocs, workers=1, strain_period=period,
-                  adjoint="extended", receiver_grid=(xs, xs, 0.))
+                  adjoint="extended", receiver_grid=(xs, xs, 0.),
+                  # damping at the velocity of the initial model (80 MPa): independent of the model
+                  # extended into the PMLs, and absorbs better than the local velocity (pml_absorption.py)
+                  pml_damping_vp=0. if case == 1 else float(np.sqrt(240e6 / RHO)))

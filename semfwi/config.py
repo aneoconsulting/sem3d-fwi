@@ -50,6 +50,9 @@ class Config:
     # simulation writes displacements, 6 times smaller than strains, and no adjoint strain is
     # written. SEMFWI_KERNELS_IN_SEM=0 falls back to the strain files and the kernels in Python.
     kernels_in_sem: bool = os.environ.get("SEMFWI_KERNELS_IN_SEM", "1") != "0"
+    # P velocity of the damping profile of the PMLs (pml_damping_vp of SEM3D); 0: the local
+    # velocity, so that the damping changes with the model when the PMLs extend it
+    pml_damping_vp: float = 0.
     # Adjoint sources: "points" (one func = file source per station and component) or
     # "extended" (3 extended sources on the station grid receiver_grid = (xs, ys, z))
     adjoint: str = "points"

@@ -14,7 +14,7 @@ Results in $SEMFWI_RUNS/fathi/case<n>/psf_<pulse>/psf.npz (v and H v per bump) a
   zhalf : depth extent where |H v| in the bump's block exceeds half its maximum, on the vertical
           through the bump (vertical resolution).
 
-The PMLs extend the model point by point (--pml copy, default, as in the inversions): a bump inside
+The PMLs extend the model point by point (--pml copy, default): a bump inside
 the domain does not reach them. With --pml follow, each PML takes the mean of its mesh layer, so a
 bump changes the PMLs of its layer but the gradient ignores that dependence, and the products are not
 those of a symmetric Hessian (sym 3.2 instead of 0.45 for the water table at 30 m, symn 0.41 instead

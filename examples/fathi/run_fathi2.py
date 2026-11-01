@@ -197,9 +197,9 @@ def parser():
     ap.add_argument("--wp", nargs=2, type=float, default=(0.5, 0.3))
     ap.add_argument("--tag", default=None)
     ap.add_argument("--precond", choices=("none", "block", "depth"), default="none")
-    ap.add_argument("--pml", choices=("copy", "follow", "true"), default="copy",
-                    help="PML properties: the model extended point by point by SEM3D (copy), the mean of "
-                         "each mesh layer (follow), or frozen at the true model (true)")
+    ap.add_argument("--pml", choices=("copy", "follow", "true"), default="follow",
+                    help="PML properties: the mean of each mesh layer (follow), the model extended point by "
+                         "point by SEM3D (copy, stalls: see problem.py), or frozen at the true model (true)")
     return ap
 
 

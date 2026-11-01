@@ -10,12 +10,12 @@ nodes close to the PMLs stay fixed. SEM3D always reads lambda and mu; for veloci
 follows from the chain rule:
   dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda).
 
-pml: "copy" (default: SEM3D extends the current model into the PMLs point by point, from the inner
-edge of each PML, as in Fathi et al.), "follow" (each PML takes the mean of its mesh layer, so a
-perturbation anywhere in a layer changes its PMLs), None (mesher properties) or a fixed
-(lam, mu, rho). The gradient ignores the dependence of the PMLs on the model (it is restricted to
-the interior domain, as in the paper); with "copy", only the nodes on the edge of the domain act on
-the PMLs.
+pml: "follow" (default: each PML takes the mean of its mesh layer, so a perturbation anywhere in a
+layer changes its PMLs; the gradient ignores this dependence), "copy" (SEM3D extends the current model
+into the PMLs point by point, from the inner edge of each PML, as in Fathi et al.; the gradient
+includes the PML kernels, but each edge node drives a whole PML column and gets a much larger
+gradient than the interior, which stalls the inversion), None (mesher properties) or a fixed
+(lam, mu, rho). The PML damping uses cfg.pml_damping_vp when set (independent of the model).
 
 Run directories are prepared here; simulations and kernels are computed by the
 backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
@@ -33,7 +33,7 @@ from .backend import Job, LocalBackend
 
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
-                 fixed=None, pml="copy", backend=None):
+                 fixed=None, pml="follow", backend=None):
         assert param in ("lame", "vel"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
@@ -133,7 +133,7 @@ class Problem:
             self.runner.prepare(d)
             self._write_model(d, lam, mu, rho)
             sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]), save_strain=grad,
-                              strain_mode=1 if self.cfg.kernels_in_sem else 0)
+                              strain_mode=1 if self.cfg.kernels_in_sem else 0, strain_pml=self.pml == "copy")
             key = self._key(d, i, grad)
             results[i] = self._cached(tag, i, key)
             if results[i] is None:

@@ -226,7 +226,7 @@ def test_evaluate_cache(tmp_path):
     one = np.ones(cfg.grid.shape)
     be = _FakeBackend()
     dobs = np.zeros((2, 1, cfg.nt, 3))
-    pb = Problem(cfg, _FakeRunner(), dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, backend=be)
+    pb = Problem(cfg, _FakeRunner(), dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, pml=None, backend=be)
     x = np.zeros(pb.size)
     J, u, g = pb.evaluate(x, "t")
     assert be.calls == [[(0, True), (1, True)]] and g.shape == x.shape and pb.nsim == 4
@@ -276,7 +276,7 @@ def test_evaluate_cache_unreadable(tmp_path):
     one = np.ones(cfg.grid.shape)
     be = _FakeBackend()
     pb = Problem(cfg, _FakeRunner(), np.zeros((1, 1, cfg.nt, 3)), cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one,
-                 backend=be)
+                 pml=None, backend=be)
     x = np.zeros(pb.size)
     J, _, _ = pb.evaluate(x, "t")
     fn = tmp_path / "t" / "s0" / "result.npz"

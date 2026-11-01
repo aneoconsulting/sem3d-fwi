@@ -52,7 +52,8 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
         return dict(u=u, gl=gl, gm=gm)
     finally:
         for d in (dfwd, dadj):
-            shutil.rmtree(f"{d}/strain", ignore_errors=True)
+            if not os.environ.get("SEMFWI_KEEP_STRAIN"):  # kept for debugging
+                shutil.rmtree(f"{d}/strain", ignore_errors=True)
 
 
 def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
@@ -63,7 +64,9 @@ def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
     if any(fn.startswith("disp.") for fn in os.listdir(f"{dfwd}/strain")):
         # the forward simulation wrote displacements (strain_mode = 1): SEM3D computes the kernels
         # the adjoint traces are not used: not recorded
-        sem_io.write_input(dadj, cfg, srcs, save_strain=True, strain_mode=2, traces=False)
+        # kernels in the PMLs too if the forward simulation wrote their displacement
+        pml = "strain_pml = true;" in open(f"{dfwd}/input.spec").read()
+        sem_io.write_input(dadj, cfg, srcs, save_strain=True, strain_mode=2, traces=False, strain_pml=pml)
         link = f"{dadj}/fwd_strain"
         if os.path.lexists(link):
             os.remove(link)
