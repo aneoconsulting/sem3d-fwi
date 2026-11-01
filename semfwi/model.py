@@ -136,3 +136,23 @@ def interior_mask(grid, L, depth, x0=0.):
     for A, c, a, b in ((X, 0, x0, x0 + L), (Y, 1, x0, x0 + L), (Z, 2, -depth, 0.)):
         ok &= (np.maximum(A - h, lo[c]) >= a - eps) & (np.minimum(A + h, hi[c]) <= b + eps)
     return ok
+
+
+def node_volume(grid, h_elem, lo):
+    """Volume carried by each node of the parameter grid when it coincides with the GLL nodes of
+    quadratic elements (ngll = 3, grid.h = h_elem / 2, element edges at lo + k h_elem on each axis):
+    the assembled GLL weights, h_elem/6 at the element ends and 4 h_elem/6 in the middle, per axis.
+    The gradient of a node is its kernel times this volume, so that the nodes in the middle of the
+    elements get up to 8 times the gradient of their neighbours: dividing by it gives the gradient
+    of the continuous field, smooth where the kernel is (None if the grid does not match)."""
+    if abs(2 * grid.h - h_elem) > 1e-9 * h_elem:
+        return None
+    w = []
+    for c in range(3):
+        k = np.rint((grid.axis(c) - lo[c]) / grid.h)
+        if np.max(np.abs(grid.axis(c) - lo[c] - k * grid.h)) > 1e-6 * grid.h:
+            return None
+        wc = np.where(k % 2 == 1, 4., 1.) * h_elem / 6
+        wc[(k % 2 == 0) & (k > k.min()) & (k < k.max())] *= 2  # shared by two elements
+        w.append(wc)
+    return w[0][:, None, None] * w[1][None, :, None] * w[2][None, None, :]

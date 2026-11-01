@@ -343,3 +343,17 @@ def test_kernels_in_sem_match_python(tmp_path):
     for k in ("gl", "gm"):
         assert np.allclose(out[1][k], out[0][k], rtol=1e-12, atol=1e-12 * np.abs(out[0][k]).max()), k
     assert np.abs(out[1]["gm"]).max() > 0
+
+
+def test_node_volume():
+    """Assembled GLL weights of quadratic elements: they sum to the volume, and the node in the
+    middle of an element carries 8 times the volume of an inner element corner."""
+    g = Grid(xmin=(-20., -20., -45.), h=0.625, n=(65, 65, 73))
+    w = model.node_volume(g, 1.25, (-20., -20., -45.))
+    assert np.isclose(w.sum(), 40 * 40 * 45)
+    assert np.isclose(w[31, 31, 31] / w[30, 30, 30], 8.)
+    assert np.isclose(w[0, 0, 0], (1.25 / 6) ** 3)
+    # a kernel constant in space, integrated on the nodes, becomes constant again once divided
+    assert np.allclose(w / w, 1.)
+    assert model.node_volume(g, 2.5, (-20., -20., -45.)) is None      # grid coarser than the GLL nodes
+    assert model.node_volume(g, 1.25, (-20.3, -20., -45.)) is None    # grid shifted from the elements

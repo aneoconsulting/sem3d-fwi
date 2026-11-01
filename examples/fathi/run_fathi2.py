@@ -164,15 +164,27 @@ class TotalVariation(Tikhonov):
         return np.concatenate(out)
 
 
-def preconditioner(kind, pb, g):
+def node_scaling(pb, cfg):
+    """Mean node volume / node volume, for each inverted node and parameter (model.node_volume):
+    the L-BFGS directions then follow the gradient of the continuous field, instead of moving
+    the nodes in the middle of the elements up to 8 times more (checkerboard). None if the
+    parameter grid does not match the GLL nodes."""
+    w = model.node_volume(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth))
+    if w is None:
+        return None
+    w = w[pb.mask]
+    return np.tile(w.mean() / w, len(pb.active))
+
+
+def preconditioner(kind, pb, g, d0=None):
     """Diagonal scaling of the L-BFGS directions, computed from the first gradient g of a frequency stage.
     "block": the lambda and mu blocks of the scaled gradient get the same norm (the data are much more
     sensitive to mu); "depth": in addition, each block is divided by the horizontal mean of |g| at each
     depth (smoothed over 5 nodes, ratio clipped at 100), the surface data being less sensitive to the
-    deep nodes. None for "none"."""
+    deep nodes. d0: scaling applied first (node_scaling), returned as is for "none"."""
     if kind == "none":
-        return None
-    d = np.ones_like(g)
+        return d0
+    d = np.ones_like(g) if d0 is None else d0.copy()
     n, m = pb.n, pb.mask
     for i in range(len(g) // n):
         sl = slice(i * n, (i + 1) * n)
@@ -298,10 +310,11 @@ def invert(args, case):
         saved = {}
         # computed once per frequency and kept, so that a restart uses the same scaling
         d_fn = f"{work}/precond_{pn}.npy"
+        d0 = node_scaling(pb, cfg)
         if args.precond != "none" and not os.path.exists(d_fn):
-            np.save(d_fn, preconditioner(args.precond, pb, gmis))
-        if args.precond != "none":
-            d = np.load(d_fn)
+            np.save(d_fn, preconditioner(args.precond, pb, gmis, d0))
+        d = np.load(d_fn) if args.precond != "none" else d0
+        if d is not None:
             opt.precond = lambda v: d * v
         for k in range(done_in_stage + 1, niter + 1):
             t0 = time.time()
