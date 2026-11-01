@@ -6,6 +6,8 @@ of a layered profile (--case 3) and of a layered profile with an ellipsoidal inc
     python run_fathi2.py both    [--stages p20:25] [--bias 15]   # 4.2.2, simultaneous, lambda bias
     python run_fathi2.py both --case 3 [--stages p20:310 p30:550 p40:252] [--bias 15]   # 4.3
     python run_fathi2.py both --case 4 [--stages p20:410 p30:320 p40:430] [--bias 50] [--noise 0.05]   # 4.4
+    python run_fathi2.py both --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05
+        # same total budget, next frequency as soon as J stalls (30 iterations without a 5 % gain)
 
 As in the paper: homogeneous 80 MPa initial model; data computed on the inversion mesh;
 regularization with R = rho_k ||g_mis|| / ||g_reg|| (section 3.3.1), rho_k decreasing from 0.5 to
@@ -196,6 +198,10 @@ def parser():
     ap.add_argument("--step0", type=float, default=0.05)
     ap.add_argument("--wp", nargs=2, type=float, default=(0.5, 0.3))
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--auto-stage", nargs=2, type=float, default=None, metavar=("W", "TOL"),
+                    help="move to the next frequency when the best J of the last W iterations is not TOL "
+                         "(relative) below the best J before them; the unused iterations go to the next stage, "
+                         "the last stage runs to the end of the total budget")
     ap.add_argument("--precond", choices=("none", "block", "depth"), default="none")
     ap.add_argument("--pml", choices=("copy", "follow", "true"), default="follow",
                     help="PML properties: the mean of each mesh layer (follow), the model extended point by "
@@ -208,6 +214,11 @@ def main():
     ap.add_argument("--case", type=int, choices=(2, 3, 4), default=2)
     args = ap.parse_args()
     invert(args, fathi_case(args.case))
+
+
+def stalled(J, w, tol):
+    """True when the best of the last w values of J is not tol (relative) below the best before them."""
+    return len(J) > 2 * w and min(J[-w:]) > (1 - tol) * min(J[:-w])
 
 
 def invert(args, case):
@@ -229,10 +240,17 @@ def invert(args, case):
         x = saved["x"]
     it_global = history[-1]["it"] if history else 0
 
+    auto = args.auto_stage and (int(args.auto_stage[0]), args.auto_stage[1])
+    carry = 0  # iterations left unused by the stages ended early (--auto-stage)
     for si, (pn, niter) in enumerate(stages):
-        done_in_stage = sum(1 for h in history if h["stage"] == si and h["it_stage"] > 0)
-        if done_in_stage >= niter:
+        last = si == len(stages) - 1
+        niter += carry
+        Js = [h["J"] for h in history if h["stage"] == si]
+        done_in_stage = len(Js) - 1 if Js else 0
+        if done_in_stage >= niter or (auto and not last and stalled(Js, *auto)):
+            carry = max(0, niter - done_in_stage)
             continue
+        carry = 0
         cfg = config(f"{work}/{pn}", case, pn)
         runner = Runner(cfg)
         lam_t, mu_t, rho = case.true_model(cfg.grid)
@@ -276,6 +294,7 @@ def invert(args, case):
             J, _, gmis = pb.evaluate(x, tag)
             if done_in_stage == 0:
                 record(0, J, 0., 0., 0, time.time() - t0, gmis)
+                Js.append(J)
         saved = {}
         # computed once per frequency and kept, so that a restart uses the same scaling
         d_fn = f"{work}/precond_{pn}.npy"
@@ -340,10 +359,16 @@ def invert(args, case):
             opt.update(xt - x, (gmis_t + R * reg.grad(xt)) - g)
             x, J, gmis = xt, Jm, gmis_t
             record(k, J, R, alpha, trial + 1, time.time() - t0, gmis)
+            Js.append(J)
             # the simulation directories are no longer needed (traces and gradients are summarised)
             for old in os.listdir(cfg.workdir):
                 if old.startswith(f"it{it_global - 1:03d}") or old.startswith(f"it{it_global - 2:03d}"):
                     os.system(f"rm -rf {cfg.workdir}/{old}/s0/fwd/traces {cfg.workdir}/{old}/s0/adj")
+            if auto and not last and stalled(Js, *auto):
+                print(f"[{pn}] J stalled over {auto[0]} iterations: next frequency, "
+                      f"{niter - k} iterations carried over", flush=True)
+                carry = niter - k
+                break
 
 
 if __name__ == "__main__":
