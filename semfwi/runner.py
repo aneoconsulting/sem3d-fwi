@@ -35,8 +35,9 @@ class Runner:
         e["PATH"] = ":".join(path + [e.get("PATH", "")])
         libs = [os.path.expanduser(e[v]) for v in ("HDF5_LIB", "MPI_LIB") if e.get(v)]
         e["LD_LIBRARY_PATH"] = ":".join(libs + [e.get("LD_LIBRARY_PATH", "")])
-        if shutil.which("mpirun", path=e["PATH"]) is None:
-            raise SimulationError("mpirun not found in PATH (set MPI_BIN)")
+        launcher = e.get("SEMFWI_MPIRUN", "mpirun").split()[0]
+        if shutil.which(launcher, path=e["PATH"]) is None:
+            raise SimulationError(f"{launcher} not found in PATH (set MPI_BIN)")
         return e
 
     def mesh(self):
@@ -97,7 +98,9 @@ class Runner:
         with open(f"{d}/input.spec") as f:
             want_strain = "save_strain = true;" in f.read()
         if not self.is_done(d, h) or (want_strain and not os.path.isdir(f"{d}/strain")):
-            cmd = ["mpirun", "--oversubscribe", "-n", str(self.cfg.nprocs), "sem3d.exe"]
+            # SEMFWI_MPIRUN: launcher, {n} = number of ranks (on a Slurm cluster: "srun -n {n}")
+            launcher = os.environ.get("SEMFWI_MPIRUN", "mpirun --oversubscribe -n {n}")
+            cmd = launcher.format(n=self.cfg.nprocs).split() + ["sem3d.exe"]
             with open(f"{d}/sem3d.log", "w") as fout:
                 r = subprocess.run(cmd, stdout=fout, stderr=subprocess.STDOUT, cwd=d, env=self.env())
             if r.returncode != 0:
