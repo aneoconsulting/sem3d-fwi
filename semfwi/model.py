@@ -88,6 +88,16 @@ def write_pml_materials(d, cfg, lam, mu, rho):
         f.write("\n".join(lines) + "\n")
 
 
+def pml_layer_gradient(cfg, g_layer):
+    """Gradient on the grid of the PML properties written by write_pml_materials: those of layer l
+    are the means over its nodes, so dJ/dlayer l (g_layer[l]) is shared equally among them."""
+    z = cfg.grid.axis(2)
+    layer_of_node = np.array([cfg.layer_of_depth(zz) for zz in z])
+    count = np.bincount(layer_of_node, minlength=len(g_layer)) * cfg.grid.n[0] * cfg.grid.n[1]
+    per_node = np.where(count > 0, g_layer / np.maximum(count, 1), 0.)[layer_of_node]
+    return np.broadcast_to(per_node, cfg.grid.shape).copy()
+
+
 def read_model(d):
     out = []
     for name in ("Lambda", "Mu", "Rho"):

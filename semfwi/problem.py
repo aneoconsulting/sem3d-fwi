@@ -11,7 +11,7 @@ follows from the chain rule:
   dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda).
 
 pml: "follow" (default: each PML takes the mean of its mesh layer, so a perturbation anywhere in a
-layer changes its PMLs; the gradient ignores this dependence), "copy" (SEM3D extends the current model
+layer changes its PMLs; the gradient includes this dependence, from the PML kernels), "copy" (SEM3D extends the current model
 into the PMLs point by point, from the inner edge of each PML, as in Fathi et al.; the gradient
 includes the PML kernels, but each edge node drives a whole PML column and gets a much larger
 gradient than the interior, which stalls the inversion), None (mesher properties) or a fixed
@@ -133,7 +133,7 @@ class Problem:
             self.runner.prepare(d)
             self._write_model(d, lam, mu, rho)
             sem_io.write_input(d, self.cfg, sem_io.materialize_sources(d, self.cfg, [src]), save_strain=grad,
-                              strain_mode=1 if self.cfg.kernels_in_sem else 0, strain_pml=self.pml == "copy")
+                              strain_mode=1 if self.cfg.kernels_in_sem else 0, strain_pml=self.pml in ("copy", "follow"))
             key = self._key(d, i, grad)
             results[i] = self._cached(tag, i, key)
             if results[i] is None:
@@ -151,6 +151,13 @@ class Problem:
             return J, u, None
         gl = sum(r["gl"] for r in results)
         gm = sum(r["gm"] for r in results)
+        if self.pml == "follow" and "pml_layer" in results[0]:
+            # the PML points were projected on the edge nodes (copy): moved to the layer means
+            gl = gl - sum(r["pml_gl"] for r in results)
+            gm = gm - sum(r["pml_gm"] for r in results)
+            layer = sum(r["pml_layer"] for r in results)
+            gl = gl + model.pml_layer_gradient(self.cfg, layer[0])
+            gm = gm + model.pml_layer_gradient(self.cfg, layer[1])
         return J, u, self.chain(x, gl, gm)
 
     def _result_fn(self, tag, i):

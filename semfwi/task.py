@@ -37,7 +37,8 @@ def prepare_adjoint(dadj, dfwd):
 
 def run_source(cfg, runner, dfwd, dadj, dobs, grad):
     """dfwd: ready forward directory (mesh, model, input.spec with save_strain if grad).
-    Return dict(u = traces (nsta, nt, 3)) and, if grad, gl and gm (dJ/dlambda, dJ/dmu on the grid).
+    Return dict(u = traces (nsta, nt, 3)) and, if grad, gl and gm (dJ/dlambda, dJ/dmu on the grid),
+    plus the PML parts of the gradient if the strains include the PMLs (gradient.kernels_from_sem).
     A forward simulation failure propagates as is (SimulationError), any later failure as
     TaskError; the strains are deleted in all cases."""
     try:
@@ -46,10 +47,10 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
         if not grad:
             return dict(u=u)
         try:
-            gl, gm = _adjoint(cfg, runner, dfwd, dadj, dobs, u)
+            g = _adjoint(cfg, runner, dfwd, dadj, dobs, u)
         except Exception as e:
             raise TaskError(f"after the forward simulation of {dfwd}: {type(e).__name__}: {e}") from e
-        return dict(u=u, gl=gl, gm=gm)
+        return dict(u=u, **g)
     finally:
         for d in (dfwd, dadj):
             if not os.environ.get("SEMFWI_KEEP_STRAIN"):  # kept for debugging
@@ -57,7 +58,7 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
 
 
 def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
-    """Adjoint simulation and kernels projected on the grid: (gl, gm)."""
+    """Adjoint simulation and kernels projected on the grid: dict(gl, gm, ...)."""
     prepare_adjoint(dadj, dfwd)
     tau, hist = misfit.adjoint_history(misfit.residual(u, dobs, cfg.weights), cfg.dt)
     srcs = sem_io.write_adjoint_sources(dadj, cfg, tau, hist)
@@ -72,7 +73,7 @@ def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
             os.remove(link)
         os.symlink(os.path.realpath(f"{dfwd}/strain"), link)
         runner.run(dadj)
-        return gradient.kernels_from_sem(cfg.grid, dadj)
+        return gradient.kernels_from_sem(cfg, dadj)
     sem_io.write_input(dadj, cfg, srcs, save_strain=True)
     runner.run(dadj)
     jobs = [(cfg.grid, dfwd, dadj, cfg.dt, 3e7, [r]) for r in range(cfg.nprocs)]
@@ -82,4 +83,4 @@ def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
         for kl, km in ex.map(_kernels, jobs):
             gl += kl
             gm += km
-    return gl, gm
+    return dict(gl=gl, gm=gm)

@@ -46,14 +46,32 @@ def kernels(grid, dfwd, dadj, dt, mem=2e8, ranks=None):
     return gl, gm
 
 
-def kernels_from_sem(grid, dadj):
-    """dJ/dlambda and dJ/dmu on the grid from the kernels accumulated by SEM3D during the adjoint
-    simulation (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points."""
-    gl = np.zeros(grid.shape)
-    gm = np.zeros(grid.shape)
-    for rank, coords, weight in sem_io.read_strain_geom(dadj):
+def kernels_from_sem(cfg, dadj):
+    """dJ/dlambda and dJ/dmu from the kernels accumulated by SEM3D during the adjoint simulation
+    (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points.
+    dict(gl, gm): all points projected on the grid, the PML points on the nearest edge nodes
+    (PML copy). With PML points (strain_pml), also pml_gl, pml_gm, the part of gl, gm they make up,
+    and pml_layer (2, layers): the sums of their kernels by mesh layer of their element, i.e. dJ/dlambda
+    and dJ/dmu of the uniform properties of the PMLs of each layer (PML follow)."""
+    grid = cfg.grid
+    gl, gm = np.zeros(grid.shape), np.zeros(grid.shape)
+    pl, pm = np.zeros(grid.shape), np.zeros(grid.shape)
+    layer = np.zeros((2, len(cfg.layer_list)))
+    for rank, coords, weight, npml in sem_io.read_strain_geom(dadj):
         K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(2, -1)
         idx, w = model.trilinear(grid, coords)
-        gl += model.project(grid, weight * K[0], idx, w)
-        gm += model.project(grid, weight * K[1], idx, w)
-    return gl, gm
+        for g, p, k in ((gl, pl, K[0]), (gm, pm, K[1])):
+            g += model.project(grid, weight * k, idx, w)
+            if npml:
+                p += model.project(grid, (weight * k)[-npml:], idx[-npml:], w[-npml:])
+        if npml:
+            # element centre, clipped to the domain: a bottom PML depends on the last layer
+            zc = coords[-npml:, 2].reshape(-1, cfg.ngll ** 3).mean(axis=1)
+            el = np.array([cfg.layer_of_depth(z) for z in np.clip(zc, -cfg.depth, 0.)])
+            wk = (weight * K)[:, -npml:].reshape(2, -1, cfg.ngll ** 3).sum(axis=2)
+            for c in range(2):
+                np.add.at(layer[c], el, wk[c])
+    out = dict(gl=gl, gm=gm)
+    if np.any(layer):
+        out.update(pml_gl=pl, pml_gm=pm, pml_layer=layer)
+    return out

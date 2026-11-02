@@ -198,8 +198,8 @@ def read_traces(d, nsta):
 
 
 def read_strain_geom(d):
-    """Strain points per rank: list of (rank string, coords (npts,3), weight (npts)), ranks without
-    points skipped."""
+    """Strain points per rank: list of (rank string, coords (npts,3), weight (npts), npts_pml), ranks
+    without points skipped. The last npts_pml points are in the PMLs (strain_pml), element by element."""
     out = []
     for fn in sorted(os.listdir(f"{d}/strain")):
         if not fn.startswith("strain_geom."):
@@ -207,7 +207,7 @@ def read_strain_geom(d):
         with h5py.File(f"{d}/strain/{fn}", "r") as f:
             if int(f.attrs["npts"]) == 0:
                 continue
-            out.append((fn.split(".")[1], f["coords"][...], f["weight"][...]))
+            out.append((fn.split(".")[1], f["coords"][...], f["weight"][...], int(f.attrs.get("npts_pml", 0))))
     return out
 
 
