@@ -30,6 +30,24 @@ gives nothing over RelWithDebInfo: 557 s against 542 s for one case-3 iteration 
 Building on the login node takes about 6 minutes with `-j 4` and is allowed; the `compil` partition can
 queue for hours.
 
+This ngll = 3 build is the default binary (`SEM3D_BIN` in `env.sh`). One case-3 iteration, alone on a
+node: 245 s on 1 rank, 35 s on 20, 30 s on 40, against 542, 56 and 44 s with RelWithDebInfo; J identical
+to the bit. The option that selects the ngll = 3 kernels is `-DOPT_MIN_GLL_OPT=3`.
+
+An install shared by the members of a project goes in `$WORK_SHARED` (group-writable), built the same
+way on the login node; `env.sh` then points `SEMFWI_SRC`, `SEM3D_BIN` and the venv there:
+
+```bash
+D=$WORK_SHARED            # or a subdirectory of it
+module purge && module load gcc/12.2.0 openmpi/4.1.5 hdf5/1.12.0-mpi cmake python/3.11.5
+cmake -S $D/SEM -B $D/build/sem3d-adjoint-ngll3 \
+      -DCMAKE_BUILD_TYPE=Release -DOPT_VEC=8 -DOPT_MIN_GLL_OPT=3 \
+      -DCMAKE_Fortran_FLAGS=-march=cascadelake -DCMAKE_C_FLAGS=-march=cascadelake -DOPT_MPI=ON \
+      -DCMAKE_Fortran_COMPILER=mpif90 -DCMAKE_C_COMPILER=mpicc \
+      -DCMAKE_INSTALL_PREFIX=$D/install/sem3d-adjoint-ngll3
+cmake --build $D/build/sem3d-adjoint-ngll3 -j 4 && cmake --install $D/build/sem3d-adjoint-ngll3
+```
+
 ## 2. Python
 
 ```bash
