@@ -1,12 +1,13 @@
 # Case 3, starting model (the reference is homogeneous 80 MPa in every run).
-# One line per inversion: tag, then the arguments of run_fathi2.py after "both".
-c3_hom80      --case 3 --stages p20:310 p30:550 p40:252 --bias 15
-c3_hom60      --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init hom:60
-c3_hom100     --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init hom:100
-c3_hom125     --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init hom:125
-c3_grad80_125 --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init grad:80:125
-c3_grad80_160 --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init grad:80:160
-c3_grad125_80 --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init grad:125:80
-c3_smooth3    --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init smooth:3
-c3_smooth8    --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --init smooth:8
-c3_noise5     --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --noise 0.05
+# One line per inversion: tag, then the arguments of run_fathi2.py after "both". --auto-stage: next
+# frequency as soon as J stalls (5 % over 30 iterations), iterations carried over.
+c3_hom80      --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15
+c3_hom60      --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init hom:60
+c3_hom100     --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init hom:100
+c3_hom125     --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init hom:125
+c3_grad80_125 --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init grad:80:125
+c3_grad80_160 --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init grad:80:160
+c3_grad125_80 --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init grad:125:80
+c3_smooth3    --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init smooth:3
+c3_smooth8    --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --init smooth:8
+c3_noise5     --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05 --bias 15 --noise 0.05

@@ -1,11 +1,11 @@
 # Case 4 (layers and inclusion): noise, starting model, bias, TV weight.
-c4_ref        --case 4 --stages p20:410 p30:320 p40:430 --bias 50
-c4_noise1     --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --noise 0.01
-c4_noise5     --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --noise 0.05
-c4_hom100     --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --init hom:100
-c4_grad80_125 --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --init grad:80:125
-c4_layers3    --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --init layers:3
-c4_layers0    --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --init layers:0
-c4_bias15     --case 4 --stages p20:410 p30:320 p40:430 --bias 15
-c4_eps0.001   --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --eps 0.001
-c4_eps0.1     --case 4 --stages p20:410 p30:320 p40:430 --bias 50 --eps 0.1
+c4_ref        --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50
+c4_noise1     --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --noise 0.01
+c4_noise5     --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --noise 0.05
+c4_hom100     --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --init hom:100
+c4_grad80_125 --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --init grad:80:125
+c4_layers3    --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --init layers:3
+c4_layers0    --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --init layers:0
+c4_bias15     --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 15
+c4_eps0.001   --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --eps 0.001
+c4_eps0.1     --case 4 --stages p20:410 p30:320 p40:430 --auto-stage 30 0.05 --bias 50 --eps 0.1

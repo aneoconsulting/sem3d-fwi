@@ -104,7 +104,8 @@ rest is the two SEM3D runs. 40 runs of 1 rank on a node need about 40 GB of memo
 One job = one node = 10 inversions of 4 ranks run at once (the scalability test: 4 ranks per run,
 10 runs per node, is a good compromise between throughput and the duration of one inversion), with
 a 20 h limit. A campaign file has one inversion per line: its tag, then the arguments of
-`run_fathi2.py both`. Use the SEM3D binary of section 1 (optimized for ngll = 3: 2.2 times faster, same J to the bit).
+`run_fathi2.py both`. The runs use `--auto-stage 30 0.05`: next frequency as soon as J gains less than 5 % over
+30 iterations, the unused iterations carried over (same total budget as the paper's stages). Use the SEM3D binary of section 1 (optimized for ngll = 3: 2.2 times faster, same J to the bit).
 
 ```bash
 sbatch examples/fathi/jeanzay/campaign.slurm examples/fathi/jeanzay/campaigns/case3_start.txt   # starting models
