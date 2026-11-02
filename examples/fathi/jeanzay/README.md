@@ -12,22 +12,31 @@ The inversion needs the `adjoint` branch of the fork (sensitivity kernels comput
 SEM3D: it lacks these kernels.
 
 ```bash
-source examples/fathi/jeanzay/env.sh          # after fixing the module names
-git clone -b adjoint https://github.com/aneojgurhem/SEM $WORK/SEM   # or scp it if outgoing git is blocked
-cmake -S $WORK/SEM -B $WORK/build/sem3d-adjoint -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPT_MPI=ON \
+source examples/fathi/jeanzay/env.sh
+git clone -b adjoint https://github.com/aneojgurhem/SEM $WORK/SEM   # or copy it with scp/rsync
+cmake -S $WORK/SEM -B $WORK/build/sem3d-adjoint -DCMAKE_BUILD_TYPE=Release -DOPT_VEC=8 -DOPT_MIN_GLL_OPT=3 \
+      -DCMAKE_Fortran_FLAGS=-march=cascadelake -DCMAKE_C_FLAGS=-march=cascadelake -DOPT_MPI=ON \
       -DCMAKE_Fortran_COMPILER=mpif90 -DCMAKE_C_COMPILER=mpicc -DCMAKE_INSTALL_PREFIX=$WORK/install/sem3d-adjoint
-cmake --build $WORK/build/sem3d-adjoint -j 8 && cmake --install $WORK/build/sem3d-adjoint
+cmake --build $WORK/build/sem3d-adjoint -j 4 && cmake --install $WORK/build/sem3d-adjoint
 ```
 
-Options as on the reference machine (AWS Graviton, gfortran, OpenMPI, HDF5 1.14): RelWithDebInfo, MPI on,
-everything else off (no CPML, no OpenACC, double precision). HDF5 must be built with the same MPI.
+Options as on the reference machine (see the main README and `docker/Dockerfile`): Release,
+`OPT_VEC=8`, `OPT_MIN_GLL_OPT=3` (kernels specialized for ngll = 3; with the default 4, case 3 runs the
+generic kernels), the native architecture (`-mcpu=native` on the Graviton, `-march=cascadelake` on the
+Jean Zay CPU nodes, Xeon Gold 6248), MPI on, everything else off (no CPML, no OpenACC, double
+precision). HDF5 must be built with the same MPI. `-O3 -march=cascadelake` alone (generic kernels)
+gives nothing over RelWithDebInfo: 557 s against 542 s for one case-3 iteration on 1 rank.
+
+Building on the login node takes about 6 minutes with `-j 4` and is allowed; the `compil` partition can
+queue for hours.
 
 ## 2. Python
 
 ```bash
 python -m venv $WORK/venvs/semfwi && source $WORK/venvs/semfwi/bin/activate
 pip install numpy h5py pytest
-cd $SEMFWI_SRC && SEMFWI_MPIRUN="srun -n {n}" pytest -q tests   # 24 tests; run inside a short allocation
+cd $SEMFWI_SRC && SEMFWI_MPIRUN="srun -n {n}" pytest -q tests --basetemp=$SCRATCH/semfwi-pytest
+# 24 tests; run inside a short allocation. --basetemp: /tmp of the compute nodes is too small
 ```
 
 `SEMFWI_MPIRUN` sets how SEM3D is launched (`{n}` = ranks). The default, `mpirun --oversubscribe -n {n}`,
@@ -72,10 +81,12 @@ Reference point, measured on our machine (AWS Graviton, 4 cores, nothing else ru
 Scaling is already sub-linear at 4 ranks. The mesher and the Python part take about 3 s in total; the
 rest is the two SEM3D runs. 40 runs of 1 rank on a node need about 40 GB of memory.
 
-## To check on Jean Zay
+## Checked on Jean Zay (November 2026)
 
-- account (`--account=...@cpu`), partition `cpu_p1`, QoS `qos_cpu-dev` (time limit and node count
-  allowed), and how exclusive jobs are charged (all 40 cores of the node, presumably).
-- module names in `env.sh` (compiler, MPI, parallel HDF5, CMake, Python >= 3.11).
-- whether git can reach GitHub from the login nodes; otherwise copy the repositories with scp.
-- `srun --exact` sharing a node between concurrent job steps (scaling_pack).
+- the account is not in the repository: `export SBATCH_ACCOUNT=<project>@cpu` before `sbatch`. Partition `cpu_p1`. CPU QoS: `qos_cpu-dev` (2 h, 10 jobs submitted), `qos_cpu-t3`
+  (20 h), `qos_cpu-t4` (4 days, 1280 cores). An exclusive node is charged 40 cores (`billing=40`).
+- modules: `gcc/12.2.0 openmpi/4.1.5 hdf5/1.12.0-mpi cmake python/3.11.5` (in `env.sh`). The only
+  HDF5 1.14 (`hdf5/1.14.5-mpi`) requires Intel MPI.
+- git reaches GitHub over https from the login nodes.
+- `srun --exact` shares a node between concurrent job steps (scaling_pack ran as expected).
+- the CPU nodes have 2 x 20 cores with SMT (80 logical CPUs); the scripts use one rank per physical core.
