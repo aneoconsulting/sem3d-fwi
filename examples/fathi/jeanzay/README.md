@@ -2,7 +2,7 @@
 
 The CPU allocation (100 000 h) ends on **1 December 2026**. Before running inversions there, we measure what one
 costs, without assuming linear scaling: the scalability test below takes about one hour of wall time and
-should use under 100 core-hours. Everything marked CHANGE_ME, and the Jean Zay details flagged
+costs at most 80 core-hours (2 jobs, 1 h limit, 40 cores), if an exclusive node is charged 40 cores. Everything marked CHANGE_ME, and the Jean Zay details flagged
 "to check", must be confirmed on site.
 
 ## 1. Build SEM3D (branch `adjoint`)
@@ -45,8 +45,8 @@ python examples/fathi/scaling.py --report            # table, once both jobs are
 
 What one measurement is: one inversion iteration of Fathi case 3 (40 x 40 x 45 m, 1.25 m elements,
 ngll = 3, 5 PML elements, 3249 stations, 0.45 s): forward simulation, adjoint simulation, kernels.
-An iteration whose first trial step is accepted costs exactly this; in our case-3 runs the average
-is closer to 1.5 evaluations per iteration.
+An iteration whose first trial step is accepted costs exactly this. Measured in our case-3 runs: 1.3 to
+1.6 evaluations per iteration on average while the inversion progresses, 2 to 4 when it stalls.
 
 The two jobs answer two different questions:
 
@@ -55,14 +55,22 @@ The two jobs answer two different questions:
 - `pack`: what a full node delivers when it runs independent inversions. The inversions of a campaign
   are independent, so the number of ranks per run should be the one with the best throughput per
   node, not the fastest single run. Running 40/n copies at once exposes the shared memory bandwidth
-  and the shared file system (each run writes several GB of displacements per iteration to $SCRATCH).
+  and the shared file system (each evaluation writes about 650 MB of displacements to $SCRATCH, then deletes them).
 
 Read in the table: `core-h/it` per number of ranks, for `strong` and `pack`. The campaign budget is
 `core-h/it` x iterations x runs, with the `pack` value at the chosen number of ranks. `J` must be
 identical for every measurement (it does not depend on the ranks); otherwise stop and report.
 
-Reference point (AWS Graviton, 4 cores, under load from another run, so pessimistic):
-1 rank 174 s, 2 ranks 127 s per evaluation; with 4 ranks, unloaded, about 40 s.
+Reference point, measured on our machine (AWS Graviton, 4 cores, nothing else running), one evaluation:
+
+| ranks | wall time | speed-up | efficiency | memory of SEM3D (all ranks) |
+|---|---|---|---|---|
+| 1 | 117 s | 1.00 | 1.00 | 1.0 GB |
+| 2 | 68 s | 1.73 | 0.86 | 1.1 GB |
+| 4 | 47 s | 2.49 | 0.62 | 1.1 GB |
+
+Scaling is already sub-linear at 4 ranks. The mesher and the Python part take about 3 s in total; the
+rest is the two SEM3D runs. 40 runs of 1 rank on a node need about 40 GB of memory.
 
 ## To check on Jean Zay
 
