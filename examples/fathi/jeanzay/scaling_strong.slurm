@@ -2,7 +2,6 @@
 # One inversion iteration of case 3 (forward + adjoint + kernels) on 1 to 40 ranks, one after the other,
 # on a whole node: wall time and core-hours per iteration as a function of the ranks per run.
 #SBATCH --job-name=fwi-strong
-#SBATCH --account=CHANGE_ME@cpu
 #SBATCH --partition=cpu_p1
 #SBATCH --qos=qos_cpu-dev
 #SBATCH --nodes=1

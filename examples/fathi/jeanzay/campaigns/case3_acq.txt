@@ -1,0 +1,11 @@
+# Case 3, acquisition (stations: step and half side in m; one shot per load).
+a_s5_zxy     --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-step 5 --loads z x y
+a_s1.25       --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-step 1.25
+a_s2.5        --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-step 2.5
+a_s5          --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-step 5
+a_e8.75       --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-extent 8.75
+a_zs          --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --loads zs
+a_x           --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --loads x
+a_zx          --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --loads z x
+a_zxy         --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --loads z x y
+a_s2.5_zx     --case 3 --stages p20:310 p30:550 p40:252 --bias 15 --station-step 2.5 --loads z x

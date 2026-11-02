@@ -8,6 +8,8 @@ of a layered profile (--case 3) and of a layered profile with an ellipsoidal inc
     python run_fathi2.py both --case 4 [--stages p20:410 p30:320 p40:430] [--bias 50] [--noise 0.05]   # 4.4
     python run_fathi2.py both --case 3 --stages p20:310 p30:550 p40:252 --auto-stage 30 0.05
         # same total budget, next frequency as soon as J stalls (30 iterations without a 5 % gain)
+    python run_fathi2.py both --case 3 ... --init grad:80:125           # another starting model
+    python run_fathi2.py both --case 3 ... --station-step 2.5 --loads z x   # another acquisition
 
 As in the paper: homogeneous 80 MPa initial model; data computed on the inversion mesh;
 regularization with R = rho_k ||g_mis|| / ||g_reg|| (section 3.3.1), rho_k decreasing from 0.5 to
@@ -24,15 +26,17 @@ the level; fixed seed. Main deviation: the number of iterations (compute budget;
 Other cases on the same geometry (examples/nappe) reuse invert() with their own Case.
 """
 import argparse
+import dataclasses
+import fcntl
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
 
-from fathi import PULSES, homogeneous, make_config, true_model
+from fathi import PULSES, homogeneous, layered, make_config, true_model
 from semfwi import model, sem_io
 from semfwi.config import RUNS_DIR
 from semfwi.optim import LBFGS
@@ -47,13 +51,17 @@ SIM_TIME[4] = SIM_TIME[3]
 class Case:
     """What differs between the test cases: where the runs go, the true model (grid -> lambda, mu,
     rho), the simulated time per pulse (0.5 s if absent), the geometry of make_config, the
-    default regularization and the initial model (homogeneous 80 MPa, as in the paper)."""
+    default regularization, the reference model (homogeneous 80 MPa, as in the paper: x = 0, TV and
+    the errors are relative to it), the starting model if different (grid -> lambda, mu) and the
+    acquisition (make_config arguments station_step, station_extent, loads)."""
     root: str
     true_model: Callable
     sim_time: dict
     geometry: int = 2
     reg: str = "tv"
-    initial: Callable = homogeneous  # initial model, grid -> lambda, mu, rho
+    initial: Callable = homogeneous  # reference model, grid -> lambda, mu, rho
+    start: Callable = None
+    acq: dict = field(default_factory=dict)
 
 
 def fathi_case(n):
@@ -63,23 +71,66 @@ def fathi_case(n):
 
 def config(workdir, case, pulse_name):
     case = fathi_case(case) if isinstance(case, int) else case
-    return make_config(workdir, case.geometry, pulse_name, sim_time=case.sim_time.get(pulse_name))
+    return make_config(workdir, case.geometry, pulse_name, sim_time=case.sim_time.get(pulse_name), **case.acq)
 
 
 def observed(pulse_name, case):
+    """Data of the true model, (nsrc, nsta, nt, 3): one simulation per source (sim, sim1, ...),
+    computed once and shared by the inversions of the same case and acquisition (file lock)."""
     cfg = config(f"{case.root}/data_{pulse_name}", case, pulse_name)
-    runner = Runner(cfg)
-    lam, mu, rho = case.true_model(cfg.grid)
-    d = f"{cfg.workdir}/sim"
-    if os.path.exists(f"{d}/.done") and os.path.isdir(f"{d}/traces"):
-        # already computed (shared by the inversions running in parallel): read only
-        return sem_io.read_traces(d, len(cfg.stations))[None]
-    runner.prepare(d)
-    model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
-    model.write_pml_copy(d)
-    sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, cfg.sources))
-    runner.run(d)
-    return sem_io.read_traces(d, len(cfg.stations))[None]
+    os.makedirs(cfg.workdir, exist_ok=True)
+    with open(f"{cfg.workdir}/.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        out = []
+        for i, src in enumerate(cfg.sources):
+            d = f"{cfg.workdir}/sim{i or ''}"
+            if not (os.path.exists(f"{d}/.done") and os.path.isdir(f"{d}/traces")):
+                runner = Runner(cfg)
+                lam, mu, rho = case.true_model(cfg.grid)
+                runner.prepare(d)
+                model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
+                model.write_pml_copy(d)
+                sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, [src]))
+                runner.run(d)
+            out.append(sem_io.read_traces(d, len(cfg.stations)))
+    return np.stack(out)
+
+
+def smooth(f, sigma, h):
+    """Gaussian smoothing of a grid field, standard deviation sigma in m, mirrored edges."""
+    if sigma <= 0:
+        return f.copy()
+    s = sigma / h
+    k = np.exp(-0.5 * (np.arange(-int(4 * s), int(4 * s) + 1) / s) ** 2)
+    k /= k.sum()
+    for a in range(3):
+        pad = [(0, 0)] * 3
+        pad[a] = (len(k) // 2, len(k) // 2)
+        f = np.apply_along_axis(lambda v: np.convolve(v, k, mode="valid"), a, np.pad(f, pad, mode="symmetric"))
+    return f
+
+
+def starting_model(spec, case):
+    """--init: hom:V (homogeneous V MPa), grad:A:B (A MPa at the surface to B MPa at the bottom,
+    linear in depth), smooth:S (true model smoothed, S m), layers:S (layers of case 3 without the
+    inclusion, smoothed, S m; 0: exact). lambda = mu, as in all the Fathi models."""
+    kind, *v = spec.split(":")
+    v = [float(a) for a in v]
+
+    def start(grid):
+        X, Y, Z = grid.mesh()
+        if kind == "hom":
+            m = np.full(grid.shape, v[0] * 1e6)
+        elif kind == "grad":
+            m = 1e6 * (v[0] + (v[1] - v[0]) * (-Z) / (-grid.xmin[2]))
+        elif kind == "smooth":
+            m = smooth(case.true_model(grid)[0], v[0], grid.h)
+        elif kind == "layers":
+            m = smooth(layered(Z), v[0], grid.h)
+        else:
+            raise ValueError(spec)
+        return m, m.copy()
+    return start
 
 
 def add_noise(d, level, seed=0):
@@ -215,6 +266,13 @@ def parser():
                          "(relative) below the best J before them; the unused iterations go to the next stage, "
                          "the last stage runs to the end of the total budget")
     ap.add_argument("--precond", choices=("none", "block", "depth"), default="none")
+    ap.add_argument("--init", default=None, help="starting model (hom:V, grad:A:B, smooth:S, layers:S; "
+                    "see starting_model); default: the reference, homogeneous 80 MPa")
+    ap.add_argument("--station-step", type=float, default=None, help="m, default 0.625")
+    ap.add_argument("--station-extent", type=float, default=None, help="half side of the station grid, m, default 17.5")
+    ap.add_argument("--loads", nargs="+", default=None, choices=("z", "x", "y", "zs"),
+                    help="one shot per load (fathi.LOADS), default z")
+    ap.add_argument("--data-only", action="store_true", help="compute the data of every stage and stop")
     ap.add_argument("--pml", choices=("copy", "follow", "true"), default="follow",
                     help="PML properties: the mean of each mesh layer (follow), the model extended point by "
                          "point by SEM3D (copy, stalls: see problem.py), or frozen at the true model (true)")
@@ -225,7 +283,20 @@ def main():
     ap = parser()
     ap.add_argument("--case", type=int, choices=(2, 3, 4), default=2)
     args = ap.parse_args()
-    invert(args, fathi_case(args.case))
+    invert(args, with_options(fathi_case(args.case), args))
+
+
+def with_options(case, args):
+    """Case with the starting model and acquisition of the options. A non-default acquisition has its
+    own directory (its data differ): <root>/acq_s<step>_e<extent>_<loads>."""
+    acq = {k: v for k, v in (("station_step", args.station_step), ("station_extent", args.station_extent),
+                             ("loads", tuple(args.loads) if args.loads else None)) if v is not None}
+    case = dataclasses.replace(case, acq=acq, start=starting_model(args.init, case) if args.init else None)
+    if acq:
+        name = (f"acq_s{acq.get('station_step', 0.625):g}_e{acq.get('station_extent', 17.5):g}_"
+                + "-".join(acq.get("loads", ("z",))))
+        case = dataclasses.replace(case, root=f"{case.root}/{name}")
+    return case
 
 
 def stalled(J, w, tol):
@@ -243,6 +314,10 @@ def invert(args, case):
     os.makedirs(work, exist_ok=True)
     active = {"mu": ("b",), "lambda": ("a",), "both": ("a", "b")}[args.which]
     total = sum(n for _, n in stages)
+    if args.data_only:
+        for pn, _ in stages:
+            observed(pn, case)
+        return
 
     hist_fn, state_fn = f"{work}/history.json", f"{work}/state.npz"
     history = json.load(open(hist_fn)) if os.path.exists(hist_fn) else []
@@ -275,7 +350,7 @@ def invert(args, case):
         pb.nsim = history[-1]["nsim"] if history else 0  # cumulative count, including before a restart
         reg = TotalVariation(pb, args.eps) if reg_kind == "tv" else Tikhonov(pb)
         if x is None:
-            x = np.zeros(pb.size)
+            x = pb.to_x(*case.start(cfg.grid)) if case.start else np.zeros(pb.size)
 
         opt = LBFGS(m=15)
 

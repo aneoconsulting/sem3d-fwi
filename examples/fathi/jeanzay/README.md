@@ -34,7 +34,7 @@ queue for hours.
 
 ```bash
 python -m venv $WORK/venvs/semfwi && source $WORK/venvs/semfwi/bin/activate
-pip install numpy h5py pytest
+pip install numpy h5py pytest matplotlib   # matplotlib: campaign_report.py
 cd $SEMFWI_SRC && SEMFWI_MPIRUN="srun -n {n}" pytest -q tests --basetemp=$SCRATCH/semfwi-pytest
 # 24 tests; run inside a short allocation. --basetemp: /tmp of the compute nodes is too small
 ```
@@ -80,6 +80,25 @@ Reference point, measured on our machine (AWS Graviton, 4 cores, nothing else ru
 
 Scaling is already sub-linear at 4 ranks. The mesher and the Python part take about 3 s in total; the
 rest is the two SEM3D runs. 40 runs of 1 rank on a node need about 40 GB of memory.
+
+## 4. Campaigns
+
+One job = one node = 10 inversions of 4 ranks run at once (the scalability test: 4 ranks per run,
+10 runs per node, is a good compromise between throughput and the duration of one inversion), with
+a 20 h limit. A campaign file has one inversion per line: its tag, then the arguments of
+`run_fathi2.py both`. Use the SEM3D binary of section 1 (optimized for ngll = 3: 2.2 times faster, same J to the bit).
+
+```bash
+sbatch examples/fathi/jeanzay/campaign.slurm examples/fathi/jeanzay/campaigns/case3_start.txt   # starting models
+sbatch examples/fathi/jeanzay/campaign.slurm examples/fathi/jeanzay/campaigns/case4.txt         # case 4
+sbatch examples/fathi/jeanzay/campaign.slurm examples/fathi/jeanzay/campaigns/case3_acq.txt     # acquisition
+cd examples/fathi && python campaign_report.py jeanzay/campaigns/*.txt   # at any time, finished or not
+```
+
+The report writes, in `$SEMFWI_RUNS/report`, one table (`.txt`) and one figure (`.png`) per campaign
+file. A run stopped by the time limit resumes from its last iteration when the same file is submitted
+again. Logs: `$SEMFWI_RUNS/logs/<tag>.log`. The job deletes old iteration directories as it goes
+(about 200 MB each; the start of each frequency and the last 5 iterations are kept).
 
 ## Checked on Jean Zay (November 2026)
 

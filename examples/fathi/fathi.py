@@ -50,10 +50,18 @@ def homogeneous(grid, value=80e6):
     return value * one, value * one, RHO * one
 
 
-def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=None):
+LOADS = {"z": (17.5, (0., 0., -1.)), "x": (17.5, (1., 0., 0.)), "y": (17.5, (0., 1., 0.)),
+         "zs": (5., (0., 0., -1.))}  # half side of the loaded square, direction of the traction
+
+
+def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=None,
+                station_step=0.625, station_extent=17.5, loads=("z",)):
     """case 1: 24 x 24 x 45 m, 1 m elements (0.5 m for the data), 5 m PML.
     cases 2 to 4: 40 x 40 x 45 m, 1.25 m elements, 6.25 m PML. Quadratic elements (ngll = 3),
-    T = 0.5 s unless sim_time is given. Deviation from the paper: SEM3D's Newmark scheme diverges
+    T = 0.5 s unless sim_time is given. Acquisition of cases 2 to 4 (default: the paper's):
+    stations every station_step m on the square of half side station_extent, one shot per load
+    of LOADS (vertical, horizontal along x or y on the loaded area of the paper, vertical on a
+    10 m square). Deviation from the paper: SEM3D's Newmark scheme diverges
     at Fathi's time steps (Runge-Kutta 4: 9e-4 and 1e-3 s); we use 4.5e-4 s (case 1, 2.25e-4 s for
     the fine data) and 6.25e-4 s (cases 2 to 4), i.e. a Courant number of about 0.4."""
     if case == 1:
@@ -73,13 +81,17 @@ def make_config(workdir, case, pulse_name="p20", fine=False, nprocs=4, sim_time=
     nl = int(round(depth / h))
     xs = np.arange(-zone, zone + 1e-9, 0.5 * h if not fine else 0.5 * 2 * h)  # coarse mesh nodes
     if case != 1:
-        xs = np.arange(-zone, zone + 1e-9, 0.625)
+        xs = np.arange(-station_extent, station_extent + 1e-9, station_step)
     stations = [(x, y, 0.) for x in xs for y in xs]
-    load = sem_io.SurfaceLoad(-zone, zone, h, 3, 1000., pulse(pulse_name))
+    if case == 1:
+        sources = [sem_io.SurfaceLoad(-zone, zone, h, 3, 1000., pulse(pulse_name))]
+    else:
+        sources = [sem_io.SurfaceLoad(-LOADS[k][0], LOADS[k][0], h, 3, 1000., pulse(pulse_name),
+                                      direction=LOADS[k][1]) for k in loads]
     return Config(workdir=workdir, L=2 * half, x0=-half, depth=depth, h_elem=h, ngll=3,
                   layers=[(h, 1)] * nl, npml=int(round(5. / h)) if case == 1 else 5,
                   sim_time=sim_time, dt=dt, courant=1.0, grid=grid, lam0=80e6, mu0=80e6, rho0=RHO,
-                  stations=stations, sources=[load], nprocs=nprocs, workers=1, strain_period=period,
+                  stations=stations, sources=sources, nprocs=nprocs, workers=1, strain_period=period,
                   adjoint="extended", receiver_grid=(xs, xs, 0.),
                   # damping at the velocity of the initial model (80 MPa): independent of the model
                   # extended into the PMLs, and absorbs better than the local velocity (pml_absorption.py)

@@ -3,7 +3,6 @@
 # 40/n runs at once on the node (memory bandwidth and file system shared), compared with the same n
 # alone on the node (scaling_strong.slurm).
 #SBATCH --job-name=fwi-pack
-#SBATCH --account=CHANGE_ME@cpu
 #SBATCH --partition=cpu_p1
 #SBATCH --qos=qos_cpu-dev
 #SBATCH --nodes=1
