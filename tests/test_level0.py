@@ -417,3 +417,31 @@ def test_line_search_diverged_trial(tmp_path):
                             log=lines.append)
     assert len(h) == 3 and h[1]["J"] < h[0]["J"]
     assert sum("failed (J = nan)" in s for s in lines) == 2  # x = 5 and 2.5, then 1.25 accepted
+
+
+def test_first_stage_failure_next_stage(tmp_path):
+    """A line-search failure at the first stage (J flat: no trial passes Armijo) goes on to the next
+    stage, as at the other stages."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    class Flat:
+        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        cfg = SimpleNamespace(workdir=str(tmp_path))
+
+        def bound(self, x):
+            return x, 0
+
+        def evaluate(self, x, tag):
+            return 1., None, np.ones_like(x)
+
+    class Quadratic(Flat):
+        def evaluate(self, x, tag):
+            return 0.5 * np.sum((x - 1) ** 2), None, x - 1
+
+    lines = []
+    _, h = inversion.invert(str(tmp_path / "run"), [("p20", 3), ("p30", 2)],
+                            lambda si, name: Flat() if si == 0 else Quadratic(), log=lines.append)
+    assert any("line search failed at iteration 1" in s for s in lines)
+    assert [e["stage"] for e in h] == [0, 1, 1, 1] and h[-1]["J"] < h[1]["J"]

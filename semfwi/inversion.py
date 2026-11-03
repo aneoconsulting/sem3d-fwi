@@ -13,7 +13,7 @@ its pulse, its run directory); the model x goes from one stage to the next. At e
 - line search: Armijo, backtracking by quadratic interpolation, the trials brought back to the bounds
   of the problem (Problem.bound), the step halved after a failed simulation, a non-physical model or a
   non-finite J; on a failure, a second attempt by steepest descent, L-BFGS memory
-  cleared. A failure ends the stage, and the run at the first stage;
+  cleared. A failure ends the stage (J no longer decreases, e.g. at the noise level);
 - auto_stage (w, tol): next stage as soon as J stalls (stalled), the unused iterations carried over.
 Each line-search trial computes J and the gradient (speculative gradient): per-source evaluations are
 independent and complete, which allows a remote backend (ArmoniK).
@@ -283,9 +283,6 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                 trial0 = trial + 1
             if not accepted:
                 log(f"line search failed at iteration {it_global}")
-                if si == 0:  # the first stage did not converge: the next ones would start from a bad model
-                    log("first stage: run stopped")
-                    return x, history
                 break
             opt.update(xt - x, (gmis_t + R * R_fn.grad(xt)) - g)
             x, J, gmis = xt, Jm, gmis_t
