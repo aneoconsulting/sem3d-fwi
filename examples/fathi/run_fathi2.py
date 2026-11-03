@@ -215,24 +215,12 @@ class TotalVariation(Tikhonov):
         return np.concatenate(out)
 
 
-def node_scaling(pb, cfg):
-    """Mean node volume / node volume, for each inverted node and parameter (model.node_volume):
-    the L-BFGS directions then follow the gradient of the continuous field, instead of moving
-    the nodes in the middle of the elements up to 8 times more (checkerboard). None if the
-    parameter grid does not match the GLL nodes."""
-    w = model.node_volume(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth))
-    if w is None:
-        return None
-    w = w[pb.mask]
-    return np.tile(w.mean() / w, len(pb.active))
-
-
 def preconditioner(kind, pb, g, d0=None):
     """Diagonal scaling of the L-BFGS directions, computed from the first gradient g of a frequency stage.
     "block": the lambda and mu blocks of the scaled gradient get the same norm (the data are much more
     sensitive to mu); "depth": in addition, each block is divided by the horizontal mean of |g| at each
     depth (smoothed over 5 nodes, ratio clipped at 100), the surface data being less sensitive to the
-    deep nodes. d0: scaling applied first (node_scaling), returned as is for "none"."""
+    deep nodes. d0: scaling applied first (pb.scaling, model.node_scaling), returned as is for "none"."""
     if kind == "none":
         return d0
     d = np.ones_like(g) if d0 is None else d0.copy()
@@ -385,7 +373,7 @@ def invert(args, case):
         saved = {}
         # computed once per frequency and kept, so that a restart uses the same scaling
         d_fn = f"{work}/precond_{pn}.npy"
-        d0 = node_scaling(pb, cfg)
+        d0 = pb.scaling
         if args.precond != "none" and not os.path.exists(d_fn):
             np.save(d_fn, preconditioner(args.precond, pb, gmis, d0))
         d = np.load(d_fn) if args.precond != "none" else d0
@@ -418,7 +406,9 @@ def invert(args, case):
                 alpha = 1. if opt.s else args.step0 / np.max(np.abs(p))
                 for trial in range(trial0, trial0 + 6):
                     tag = f"it{it_global:03d}_t{trial}"
-                    xt = x + alpha * p
+                    xt, moved = pb.bound(x + alpha * p)
+                    if moved:
+                        print(f"  trial {trial}: {moved} nodes brought back to the bounds", flush=True)
                     try:
                         Jm, _, gmis_t = pb.evaluate(xt, tag)
                     except (SimulationError, model.UnphysicalModel) as e:
@@ -443,6 +433,9 @@ def invert(args, case):
                 trial0 = trial + 1
             if not accepted:
                 print(f"line search failed at iteration {it_global}", flush=True)
+                if si == 0:  # the first frequency did not converge: the next ones would start from a bad model
+                    print("first frequency: run stopped", flush=True)
+                    return
                 break
             opt.update(xt - x, (gmis_t + R * reg.grad(xt)) - g)
             x, J, gmis = xt, Jm, gmis_t

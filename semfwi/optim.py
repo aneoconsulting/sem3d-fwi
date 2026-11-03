@@ -54,9 +54,13 @@ class LBFGS:
 
 def minimize(problem, x0, niter, workdir, step0=0.02, c1=1e-4, max_trials=6, m=5, precond=None,
              callback=None, log=print):
-    """Minimizes J; step0: maximum relative change of the model at the first step."""
+    """Minimizes J; step0: maximum relative change of the model at the first step. precond: by default,
+    the node scaling of the problem (problem.scaling, when its grid is on the GLL nodes). The trials
+    are brought back to the bounds of the problem (problem.bound)."""
     state_fn = os.path.join(workdir, "state.npz")
     hist_fn = os.path.join(workdir, "history.json")
+    if precond is None and problem.scaling is not None:
+        precond = lambda v: problem.scaling * v  # noqa: E731
     opt = LBFGS(m, precond)
     if os.path.exists(state_fn):
         st = np.load(state_fn)
@@ -87,7 +91,9 @@ def minimize(problem, x0, niter, workdir, step0=0.02, c1=1e-4, max_trials=6, m=5
         accepted = False
         for trial in range(max_trials):
             tag = f"it{it:03d}_t{trial}"
-            xt = x + alpha * p
+            xt, moved = problem.bound(x + alpha * p)
+            if moved:
+                log(f"  trial {trial}: {moved} nodes brought back to the bounds")
             try:
                 Jt, _, gt = problem.evaluate(xt, tag)
             except (SimulationError, UnphysicalModel) as e:  # step too large; other failures propagate

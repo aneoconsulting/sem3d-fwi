@@ -357,3 +357,38 @@ def test_node_volume():
     assert np.allclose(w / w, 1.)
     assert model.node_volume(g, 2.5, (-20., -20., -45.)) is None      # grid coarser than the GLL nodes
     assert model.node_volume(g, 1.25, (-20.3, -20., -45.)) is None    # grid shifted from the elements
+
+
+def test_node_scaling():
+    """Inverse of the node volume, the nodes on the faces of the grid scaled as interior nodes of
+    the same kind: a corner of the grid gets the scaling of an inner element corner, not 8 times it."""
+    g = Grid(xmin=(-20., -20., -45.), h=0.625, n=(65, 65, 73))
+    mask = np.ones(g.shape, bool)
+    d = model.node_scaling(g, 1.25, (-20., -20., -45.), mask).reshape(g.shape)
+    assert np.isclose(d[30, 30, 30] / d[31, 31, 31], 8.)       # element corner / element middle
+    assert np.isclose(d[0, 0, 0], d[30, 30, 30])               # grid corner = inner element corner
+    assert np.isclose(d[0, 31, 31], d[30, 31, 31])             # face node = inner node of the same kind
+    assert np.isclose(np.mean(1 / d), 1.)                       # mean volume / volume
+    assert model.node_scaling(g, 2.5, (-20., -20., -45.), mask) is None
+
+
+def test_bound():
+    """Problem.bound: mu >= 0.2 mu_ref, then lambda + 2 mu / 3 >= 0.2 (lambda_ref + 2 mu_ref / 3); the
+    other nodes and a model within the bounds are left unchanged."""
+    from semfwi.problem import Problem
+    cfg = Config(workdir="/nonexistent")
+    one = np.ones(cfg.grid.shape)
+    pb = Problem(cfg, None, None, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one)
+    x = 0.1 * RNG.standard_normal(pb.size)
+    assert pb.bound(x) == (x, 0)
+    n = pb.n
+    x[n] = -0.95             # mu of node 0 at 5 % of mu_ref
+    x[1] = -3.               # lambda + 2 mu / 3 of node 1 negative
+    xb, moved = pb.bound(x)
+    assert moved == 2
+    lam, mu, _ = pb.to_model(xb)
+    m = pb.mask
+    k, k_ref = (lam + 2 * mu / 3)[m], (pb.lam_ref + 2 * pb.mu_ref / 3)[m]
+    assert np.isclose(mu[m][0], 0.2 * pb.mu_ref[m][0]) and np.all(mu[m] >= 0.2 * pb.mu_ref[m] * (1 - 1e-12))
+    assert np.isclose(k[1], 0.2 * k_ref[1]) and np.all(k >= 0.2 * k_ref * (1 - 1e-12))
+    assert np.array_equal(xb[2:n], x[2:n]) and np.array_equal(xb[n + 2:], x[n + 2:])

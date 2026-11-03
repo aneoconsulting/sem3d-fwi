@@ -166,3 +166,19 @@ def node_volume(grid, h_elem, lo):
         wc[(k % 2 == 0) & (k > k.min()) & (k < k.max())] *= 2  # shared by two elements
         w.append(wc)
     return w[0][:, None, None] * w[1][None, :, None] * w[2][None, None, :]
+
+
+def node_scaling(grid, h_elem, lo, mask):
+    """Mean node volume / node volume on the nodes of mask (node_volume): multiplying the gradient by
+    it, the descent directions follow the gradient of the continuous field, instead of moving the
+    nodes in the middle of the elements up to 8 times more (checkerboard). The nodes on the faces of
+    the grid (free surface, sides and bottom against the PMLs) are scaled as interior nodes, as if
+    their elements continued beyond the grid: with their own, smaller volume they moved up to 8 times
+    more again (25.8 instead of 3.2 at a corner), and the model collapsed there. None if the grid
+    does not match the GLL nodes."""
+    if node_volume(grid, h_elem, lo) is None:
+        return None
+    # volume of an interior node, per axis: 4 h_elem / 6 in the middle of an element, 2 h_elem / 6 on an edge
+    w = [np.where(np.rint((grid.axis(c) - lo[c]) / grid.h) % 2 == 1, 2., 1.) for c in range(3)]
+    w = (w[0][:, None, None] * w[1][None, :, None] * w[2][None, None, :])[mask]
+    return w.mean() / w

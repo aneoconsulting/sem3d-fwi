@@ -45,6 +45,9 @@ class Problem:
         self.pml = pml
         self.mask = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0)
         self.n = int(self.mask.sum())
+        # scaling of the descent directions (model.node_scaling), per unknown; None if the grid is not on the GLL nodes
+        d = model.node_scaling(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth), self.mask)
+        self.scaling = None if d is None else np.tile(d, len(self.active))
         self.nsim = 0
 
     @property
@@ -90,6 +93,28 @@ class Problem:
             a0, b0 = self.vp_ref, self.vs_ref
         blocks = {"a": a[self.mask] / a0[self.mask] - 1, "b": b[self.mask] / b0[self.mask] - 1}
         return np.concatenate([blocks[p] for p in self.active])
+
+    def bound(self, x, frac=0.2):
+        """x with mu >= frac mu_ref and lambda + 2 mu / 3 >= frac (lambda_ref + 2 mu_ref / 3) on every
+        inverted node (projection: mu first, then lambda), and the number of nodes moved. A safety net
+        for the line-search trials, not a regularization: the drivers log the nodes it moves. param =
+        "lame" only (x unchanged otherwise)."""
+        if self.param != "lame":
+            return x, 0
+        lam, mu, _ = self.to_model(x)
+        m = self.mask
+        mu_b = np.maximum(mu[m], frac * self.mu_ref[m]) if "b" in self.active else mu[m]
+        k_min = frac * (self.lam_ref[m] + 2 * self.mu_ref[m] / 3)
+        lam_b = np.maximum(lam[m], k_min - 2 * mu_b / 3) if "a" in self.active else lam[m]
+        moved = (mu_b != mu[m]) | (lam_b != lam[m])
+        if not moved.any():
+            return x, 0
+        x = x.copy()  # only the moved nodes are rewritten, the others keep x to the bit
+        for i, q in enumerate(self.active):
+            new = lam_b / self.lam_ref[m] - 1 if q == "a" else mu_b / self.mu_ref[m] - 1
+            sl = x[i * self.n:(i + 1) * self.n]
+            sl[moved] = new[moved]
+        return x, int(moved.sum())
 
     def chain(self, x, gl, gm):
         """Gradient with respect to x from dJ/dlambda and dJ/dmu on the grid."""
