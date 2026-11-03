@@ -62,8 +62,9 @@ case 3 of Fathi (J and gradient, 4 cores of a Graviton) takes 46 s instead of 15
 | `gradient` | K_lambda and K_mu kernels and projection onto the parameter grid |
 | `task`     | one source end to end: forward, residual, adjoint, kernels |
 | `backend`  | source execution: `LocalBackend` (local machine) |
-| `problem`  | J(x) and grad J(x) over all sources (`Problem.evaluate`) |
-| `optim`    | L-BFGS with Armijo line search, checkpoint and restart |
+| `problem`  | J(x) and grad J(x) over all sources (`Problem.evaluate`), node scaling of the directions, bounds |
+| `optim`    | L-BFGS two-loop recursion with a diagonal preconditioner |
+| `inversion`| the inversion loop of every driver: frequency stages, regularization (Tikhonov, TV), Armijo line search, checkpoint and restart |
 | `hessian`  | Hessian-vector products from two gradients, point-spread functions, low-rank Hessian |
 | `armonik_*`| ArmoniK backend (client), worker and the contract between them |
 

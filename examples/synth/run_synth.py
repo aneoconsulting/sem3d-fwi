@@ -12,7 +12,7 @@ import os
 
 import numpy as np
 
-from semfwi import model, optim, sem_io
+from semfwi import inversion, model, sem_io
 from semfwi.config import RUNS_DIR, Config
 from semfwi.problem import Problem
 from semfwi.runner import Runner
@@ -118,15 +118,9 @@ def run(args, cfg, pb, lam_t, mu_t):
             prev = r2
         return
 
-    def callback(it, x, g):
-        np.save(os.path.join(cfg.workdir, f"x{it:03d}.npy"), x)
-        out = model_errors(pb, x, lam_t, mu_t)
-        out.update(gnorm=float(np.linalg.norm(g)), nsim=pb.nsim)
-        return out
-
-    optim.minimize(pb, np.zeros(pb.size), args.niter, cfg.workdir, step0=args.step0, callback=callback,
-                   log=lambda s: print(s, flush=True))
-
+    # one stage, no regularization; the node scaling and the bounds of the problem apply
+    inversion.invert(cfg.workdir, [("synth", args.niter)], lambda si, name: pb, step0=args.step0, m=5,
+                     callback=lambda pb, x: model_errors(pb, x, lam_t, mu_t), log=lambda s: print(s, flush=True))
 
 if __name__ == "__main__":
     main()
