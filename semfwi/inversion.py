@@ -11,7 +11,8 @@ its pulse, its run directory); the model x goes from one stage to the next. At e
 - bias of the lambda direction towards the mu direction over the first `bias` iterations
   (section 3.3.3, eq. 25), both parameters inverted only;
 - line search: Armijo, backtracking by quadratic interpolation, the trials brought back to the bounds
-  of the problem (Problem.bound); on a failure, a second attempt by steepest descent, L-BFGS memory
+  of the problem (Problem.bound), the step halved after a failed simulation, a non-physical model or a
+  non-finite J; on a failure, a second attempt by steepest descent, L-BFGS memory
   cleared. A failure ends the stage, and the run at the first stage;
 - auto_stage (w, tol): next stage as soon as J stalls (stalled), the unused iterations carried over.
 Each line-search trial computes J and the gradient (speculative gradient): per-source evaluations are
@@ -258,6 +259,10 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                         Jm, _, gmis_t = pb.evaluate(xt, tag)
                     except (SimulationError, UnphysicalModel) as e:  # step too large; other failures propagate
                         log(f"  trial {trial} alpha={alpha:.3e} failed ({e})")
+                        alpha *= 0.5
+                        continue
+                    if not np.isfinite(Jm):  # the simulation diverged without failing: step too large
+                        log(f"  trial {trial} alpha={alpha:.3e} failed (J = {Jm})")
                         alpha *= 0.5
                         continue
                     Jt = Jm + R * R_fn.value(xt)

@@ -392,3 +392,28 @@ def test_bound():
     assert np.isclose(mu[m][0], 0.2 * pb.mu_ref[m][0]) and np.all(mu[m] >= 0.2 * pb.mu_ref[m] * (1 - 1e-12))
     assert np.isclose(k[1], 0.2 * k_ref[1]) and np.all(k >= 0.2 * k_ref * (1 - 1e-12))
     assert np.array_equal(xb[2:n], x[2:n]) and np.array_equal(xb[n + 2:], x[n + 2:])
+
+
+def test_line_search_diverged_trial(tmp_path):
+    """A trial whose J is not finite (simulation diverged without failing) halves the step, as a failed
+    simulation does: J = |x - 1|^2 / 2, nan beyond |x| = 2, first step to x = 5 (step0)."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    class Quadratic:
+        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        cfg = SimpleNamespace(workdir=str(tmp_path))
+
+        def bound(self, x):
+            return x, 0
+
+        def evaluate(self, x, tag):
+            J = 0.5 * np.sum((x - 1) ** 2) if np.max(np.abs(x)) <= 2 else np.nan
+            return J, None, x - 1
+
+    lines = []
+    _, h = inversion.invert(str(tmp_path / "run"), [("p20", 2)], lambda si, name: Quadratic(), step0=5.,
+                            log=lines.append)
+    assert len(h) == 3 and h[1]["J"] < h[0]["J"]
+    assert sum("failed (J = nan)" in s for s in lines) == 2  # x = 5 and 2.5, then 1.25 accepted
