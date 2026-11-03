@@ -421,13 +421,13 @@ def test_line_search_diverged_trial(tmp_path):
 
 def test_first_stage_failure_next_stage(tmp_path):
     """A line-search failure at the first stage (J flat: no trial passes Armijo) goes on to the next
-    stage, as at the other stages."""
+    stage, as at the other stages, with the unused iterations; a restart does not go back to it."""
     from types import SimpleNamespace
 
     from semfwi import inversion
 
     class Flat:
-        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        size, n, active, scaling, nsim = 50, 50, ("lambda",), None, 0
         cfg = SimpleNamespace(workdir=str(tmp_path))
 
         def bound(self, x):
@@ -436,12 +436,20 @@ def test_first_stage_failure_next_stage(tmp_path):
         def evaluate(self, x, tag):
             return 1., None, np.ones_like(x)
 
-    class Quadratic(Flat):
+    class Quadratic(Flat):  # curvatures 1 to 100: not solved in 5 iterations
+        c = np.logspace(0, 2, 50)
+
         def evaluate(self, x, tag):
-            return 0.5 * np.sum((x - 1) ** 2), None, x - 1
+            return 0.5 * np.sum(self.c * (x - 1) ** 2), None, self.c * (x - 1)
 
     lines = []
-    _, h = inversion.invert(str(tmp_path / "run"), [("p20", 3), ("p30", 2)],
-                            lambda si, name: Flat() if si == 0 else Quadratic(), log=lines.append)
-    assert any("line search failed at iteration 1" in s for s in lines)
-    assert [e["stage"] for e in h] == [0, 1, 1, 1] and h[-1]["J"] < h[1]["J"]
+    run = lambda: inversion.invert(str(tmp_path / "run"), [("p20", 3), ("p30", 2)],  # noqa: E731
+                                   lambda si, name: Flat() if si == 0 else Quadratic(), log=lines.append)
+    _, h = run()
+    # the 3 iterations of p20 are carried over to p30: 5 iterations, plus its starting point
+    assert any("line search failed at iteration 1: next stage, 3 iterations carried over" in s for s in lines)
+    assert [e["stage"] for e in h] == [0] + [1] * 6 and h[-1]["J"] < h[1]["J"]
+    # a restart does not go back to p20 (ended by the failure): nothing left to do
+    lines.clear()
+    _, h2 = run()
+    assert len(h2) == len(h) and not any("failed" in s for s in lines)

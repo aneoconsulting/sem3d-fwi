@@ -13,7 +13,8 @@ its pulse, its run directory); the model x goes from one stage to the next. At e
 - line search: Armijo, backtracking by quadratic interpolation, the trials brought back to the bounds
   of the problem (Problem.bound), the step halved after a failed simulation, a non-physical model or a
   non-finite J; on a failure, a second attempt by steepest descent, L-BFGS memory
-  cleared. A failure ends the stage (J no longer decreases, e.g. at the noise level);
+  cleared. A failure ends the stage (J no longer decreases, e.g. at the noise level), the unused
+  iterations carried over;
 - auto_stage (w, tol): next stage as soon as J stalls (stalled), the unused iterations carried over.
 Each line-search trial computes J and the gradient (speculative gradient): per-source evaluations are
 independent and complete, which allows a remote backend (ArmoniK).
@@ -174,13 +175,15 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
     it_global = history[-1]["it"] if history else 0
 
     auto = auto_stage and (int(auto_stage[0]), auto_stage[1])
-    carry = 0  # iterations left unused by the stages ended early (auto_stage)
+    carry = 0  # iterations left unused by the stages ended early (auto_stage, line-search failure)
     for si, (pn, niter) in enumerate(stages):
         last = si == len(stages) - 1
         niter += carry
         Js = [h["J"] for h in history if h["stage"] == si]
         done_in_stage = len(Js) - 1 if Js else 0
-        if done_in_stage >= niter or (auto and not last and stalled(Js, *auto)):
+        # done, or ended early: stalled, or a later stage already started (line-search failure)
+        later = any(h["stage"] > si for h in history)
+        if done_in_stage >= niter or later or (auto and not last and stalled(Js, *auto)):
             carry = max(0, niter - done_in_stage)
             continue
         carry = 0
@@ -282,7 +285,9 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                 gp = g @ p
                 trial0 = trial + 1
             if not accepted:
-                log(f"line search failed at iteration {it_global}")
+                carry = niter - (k - 1)
+                log(f"line search failed at iteration {it_global}"
+                    + ("" if last else f": next stage, {carry} iterations carried over"))
                 break
             opt.update(xt - x, (gmis_t + R * R_fn.grad(xt)) - g)
             x, J, gmis = xt, Jm, gmis_t
