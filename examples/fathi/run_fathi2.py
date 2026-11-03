@@ -27,7 +27,6 @@ Other cases on the same geometry (examples/nappe) reuse invert() with their own 
 """
 import argparse
 import dataclasses
-import fcntl
 import os
 import time
 from dataclasses import dataclass, field
@@ -36,9 +35,8 @@ from typing import Callable
 import numpy as np
 
 from fathi import PULSES, homogeneous, layered, make_config, true_model
-from semfwi import inversion, model, sem_io
+from semfwi import inversion, problem
 from semfwi.config import RUNS_DIR
-from semfwi.problem import Problem
 from semfwi.runner import Runner
 
 SIM_TIME = {2: {}, 3: {"p20": 0.45, "p30": 0.4, "p40": 0.4}}  # per pulse; 0.5 s if absent
@@ -73,25 +71,10 @@ def config(workdir, case, pulse_name):
 
 
 def observed(pulse_name, case):
-    """Data of the true model, (nsrc, nsta, nt, 3): one simulation per source (sim, sim1, ...),
-    computed once and shared by the inversions of the same case and acquisition (file lock)."""
+    """Data of the true model, (nsrc, nsta, nt, 3), PMLs extending it as in the paper: computed once
+    in <case.root>/data_<pulse> and shared by the inversions of the same case and acquisition."""
     cfg = config(f"{case.root}/data_{pulse_name}", case, pulse_name)
-    os.makedirs(cfg.workdir, exist_ok=True)
-    with open(f"{cfg.workdir}/.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        out = []
-        for i, src in enumerate(cfg.sources):
-            d = f"{cfg.workdir}/sim{i or ''}"
-            if not (os.path.exists(f"{d}/.done") and os.path.isdir(f"{d}/traces")):
-                runner = Runner(cfg)
-                lam, mu, rho = case.true_model(cfg.grid)
-                runner.prepare(d)
-                model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
-                model.write_pml_copy(d)
-                sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, [src]))
-                runner.run(d)
-            out.append(sem_io.read_traces(d, len(cfg.stations)))
-    return np.stack(out)
+    return problem.observed(cfg, Runner(cfg), cfg.workdir, *case.true_model(cfg.grid), pml="copy")
 
 
 def smooth(f, sigma, h):
@@ -207,19 +190,16 @@ def invert(args, case):
         cfg = config(f"{work}/{pn}", case, pn)
         lam_t, mu_t, rho = case.true_model(cfg.grid)
         lam0, mu0, _ = case.initial(cfg.grid)
-        truth.update(lam_t=lam_t, mu_t=mu_t, lam0=lam0, mu0=mu0)
+        truth.update(lam_t=lam_t, mu_t=mu_t)
         t0 = time.time()
         dobs = add_noise(observed(pn, case), args.noise, seed=list(PULSES).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
-        return Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t),
-                       pml=(lam_t, mu_t, rho) if args.pml == "true" else args.pml)
+        return problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t),
+                               pml=(lam_t, mu_t, rho) if args.pml == "true" else args.pml)
 
-    def errors(pb, x):
-        """Relative errors to the true model on the inverted nodes (1: no better than the reference)."""
-        lam, mu, _ = pb.to_model(x)
-        m, t = pb.mask, truth
-        return dict(err_lambda=float(np.linalg.norm((lam - t["lam_t"])[m]) / np.linalg.norm((t["lam0"] - t["lam_t"])[m])),
-                    err_mu=float(np.linalg.norm((mu - t["mu_t"])[m]) / np.linalg.norm((t["mu0"] - t["mu_t"])[m])))
+    def errors(pb, x):  # in lambda and mu only (1: no better than the reference)
+        e = problem.model_errors(pb, x, truth["lam_t"], truth["mu_t"])
+        return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"])
 
     x0 = (lambda pb: pb.to_x(*case.start(pb.cfg.grid))) if case.start else None
     inversion.invert(work, stages, make_problem, x0=x0, reg=args.reg or case.reg, eps=args.eps, wp=args.wp,

@@ -12,9 +12,8 @@ import os
 
 import numpy as np
 
-from semfwi import inversion, model, sem_io
+from semfwi import inversion, problem, sem_io
 from semfwi.config import RUNS_DIR, Config
-from semfwi.problem import Problem
 from semfwi.runner import Runner
 
 
@@ -43,31 +42,6 @@ def default_workdir(param):
     return os.path.join(RUNS_DIR, "fwi_synth" + ("_vel" if param == "vel" else ""))
 
 
-def model_errors(pb, x, lam_t, mu_t):
-    """Relative errors to the true model on the inverted nodes, in (lambda, mu) and in (Vp, Vs)."""
-    lam, mu, rho = pb.to_model(x)
-    m = pb.mask
-    vp, vs = np.sqrt((lam + 2 * mu) / rho), np.sqrt(mu / rho)
-    vp_t, vs_t = np.sqrt((lam_t + 2 * mu_t) / rho), np.sqrt(mu_t / rho)
-    out = {}
-    for name, a, t, ref in (("lambda", lam, lam_t, pb.lam_ref), ("mu", mu, mu_t, pb.mu_ref),
-                            ("vp", vp, vp_t, pb.vp_ref), ("vs", vs, vs_t, pb.vs_ref)):
-        out["err_" + name] = float(np.linalg.norm((a - t)[m]) / np.linalg.norm((t - ref)[m]))
-    return out
-
-
-def observed(cfg, runner, lam, mu, rho):
-    dirs = []
-    for i, src in enumerate(cfg.sources):
-        d = os.path.join(cfg.workdir, "obs", f"s{i}")
-        runner.prepare(d)
-        model.write_model(d, cfg.grid, lam, mu, rho)
-        sem_io.write_input(d, cfg, [src])
-        dirs.append(d)
-    runner.run_many(dirs)
-    return np.stack([sem_io.read_traces(d, len(cfg.stations)) for d in dirs])
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--param", choices=("lame", "vel"), default="vel")
@@ -82,13 +56,13 @@ def main():
     os.makedirs(cfg.workdir, exist_ok=True)
     runner = Runner(cfg)
     lam_t, mu_t, rho_t = true_model(cfg)
-    dobs = observed(cfg, runner, lam_t, mu_t, rho_t)
+    dobs = problem.observed(cfg, runner, os.path.join(cfg.workdir, "obs"), lam_t, mu_t, rho_t)
     one = np.ones(cfg.grid.shape)
     backend = None
     if args.backend == "armonik":
         from semfwi.armonik_backend import ArmoniKBackend
         backend = ArmoniKBackend()
-    pb = Problem(cfg, runner, dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param=args.param,
+    pb = problem.Problem(cfg, runner, dobs, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param=args.param,
                  backend=backend)
     try:
         run(args, cfg, pb, lam_t, mu_t)
@@ -120,7 +94,7 @@ def run(args, cfg, pb, lam_t, mu_t):
 
     # one stage, no regularization; the node scaling and the bounds of the problem apply
     inversion.invert(cfg.workdir, [("synth", args.niter)], lambda si, name: pb, step0=args.step0, m=5,
-                     callback=lambda pb, x: model_errors(pb, x, lam_t, mu_t), log=lambda s: print(s, flush=True))
+                     callback=lambda pb, x: problem.model_errors(pb, x, lam_t, mu_t), log=lambda s: print(s, flush=True))
 
 if __name__ == "__main__":
     main()

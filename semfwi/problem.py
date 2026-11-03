@@ -17,9 +17,11 @@ includes the PML kernels, but each edge node drives a whole PML column and gets 
 gradient than the interior, which stalls the inversion), None (mesher properties) or a fixed
 (lam, mu, rho). The PML damping uses cfg.pml_damping_vp when set (independent of the model).
 
+observed computes the data of a true model, model_errors the errors of an inversion to it.
 Run directories are prepared here; simulations and kernels are computed by the
 backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -29,6 +31,50 @@ import numpy as np
 
 from . import config, misfit, model, sem_io
 from .backend import Job, LocalBackend
+
+
+
+def write_model(d, cfg, lam, mu, rho, pml):
+    """Model files of a run directory, the PMLs as for Problem(pml=...)."""
+    model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
+    if pml == "copy":
+        model.write_pml_copy(d)
+    elif pml == "follow":
+        model.write_pml_materials(d, cfg, lam, mu, rho)
+    elif pml is not None:
+        model.write_pml_materials(d, cfg, *pml)
+
+
+def observed(cfg, runner, ddir, lam, mu, rho, pml=None):
+    """Data of the model (lam, mu, rho), (nsrc, nsta, nt, 3): one simulation per source in ddir/sim,
+    sim1, ..., the PMLs as for Problem(pml=...). SEM3D reruns only if the inputs changed (Runner.run),
+    and a file lock lets the inversions of the same case, started together, share the data."""
+    os.makedirs(ddir, exist_ok=True)
+    with open(f"{ddir}/.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        dirs = []
+        for i, src in enumerate(cfg.sources):
+            d = f"{ddir}/sim{i or ''}"
+            runner.prepare(d)
+            write_model(d, cfg, lam, mu, rho, pml)
+            sem_io.write_input(d, cfg, sem_io.materialize_sources(d, cfg, [src]))
+            dirs.append(d)
+        runner.run_many(dirs)
+        return np.stack([sem_io.read_traces(d, len(cfg.stations)) for d in dirs])
+
+
+def model_errors(pb, x, lam_t, mu_t):
+    """Relative errors to the true model on the inverted nodes, in (lambda, mu) and in (Vp, Vs):
+    ||m - m_true|| / ||m_ref - m_true|| (1: no better than the reference model of pb)."""
+    lam, mu, rho = pb.to_model(x)
+    m = pb.mask
+    vp, vs = np.sqrt((lam + 2 * mu) / rho), np.sqrt(mu / rho)
+    vp_t, vs_t = np.sqrt((lam_t + 2 * mu_t) / rho), np.sqrt(mu_t / rho)
+    out = {}
+    for name, a, t, ref in (("lambda", lam, lam_t, pb.lam_ref), ("mu", mu, mu_t, pb.mu_ref),
+                            ("vp", vp, vp_t, pb.vp_ref), ("vs", vs, vs_t, pb.vs_ref)):
+        out["err_" + name] = float(np.linalg.norm((a - t)[m]) / np.linalg.norm((t - ref)[m]))
+    return out
 
 
 class Problem:
@@ -137,13 +183,7 @@ class Problem:
         return os.path.join(self.cfg.workdir, tag, f"s{i}", kind)
 
     def _write_model(self, d, lam, mu, rho):
-        model.write_model(d, self.cfg.grid, lam, mu, rho, nmat=len(self.cfg.layer_list))
-        if self.pml == "copy":
-            model.write_pml_copy(d)
-        elif self.pml == "follow":
-            model.write_pml_materials(d, self.cfg, lam, mu, rho)
-        elif self.pml is not None:
-            model.write_pml_materials(d, self.cfg, *self.pml)
+        write_model(d, self.cfg, lam, mu, rho, self.pml)
 
     def evaluate(self, x, tag, grad=True):
         """J(x), traces u (nsrc, nsta, nt, 3) and grad J(x) (None if grad is false). The simulations
