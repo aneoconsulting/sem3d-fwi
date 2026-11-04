@@ -453,3 +453,25 @@ def test_first_stage_failure_next_stage(tmp_path):
     lines.clear()
     _, h2 = run()
     assert len(h2) == len(h) and not any("failed" in s for s in lines)
+
+
+def test_depth_preconditioner_keeps_scaling():
+    """"depth" multiplies the node scaling d0 by a factor per depth: within a horizontal plane,
+    d / d0 is constant; "block" keeps d0 up to a factor per block."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    shape = (4, 4, 6)
+    mask = np.ones(shape, bool)
+    n = mask.sum()
+    pb = SimpleNamespace(n=n, mask=mask, grid_field=lambda v: v.reshape(shape))
+    rng = np.random.default_rng(0)
+    d0 = np.tile(rng.uniform(1, 8, n), 2)
+    g = rng.standard_normal(2 * n) * np.tile(np.linspace(1, 10, shape[2]), 2 * shape[0] * shape[1])
+    for kind in ("block", "depth"):
+        d = inversion.preconditioner(kind, pb, g, d0)
+        r = (d / d0).reshape(2, *shape)
+        assert np.allclose(r, r[:, :1, :1, :]), kind  # one factor per block and depth
+        if kind == "block":
+            assert np.allclose(r, r[:, :1, :1, :1])

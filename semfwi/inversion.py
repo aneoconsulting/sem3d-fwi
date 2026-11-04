@@ -140,7 +140,7 @@ def preconditioner(kind, pb, g, d0=None):
             prof = np.array([a[:, :, k][m[:, :, k]].mean() if m[:, :, k].any() else 0. for k in range(a.shape[2])])
             prof = np.convolve(prof, np.ones(5) / 5, mode="same")
             w = np.broadcast_to(1. / np.maximum(prof, prof.max() / 100), a.shape)
-            d[sl] = w[m]
+            d[sl] *= w[m]
         d[sl] /= np.linalg.norm(d[sl] * g[sl])
     return d
 
