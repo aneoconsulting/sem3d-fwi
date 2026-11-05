@@ -159,6 +159,15 @@ def _clean(workdir, it):
                 shutil.rmtree(os.path.join(workdir, d, s, "adj"), ignore_errors=True)
 
 
+def _clean_stale(workdir, it):
+    """Trial directories of iteration it left by an interrupted run: its trials are redone and numbered
+    from 0 again, and a trial directory numbered after the current one could be taken for a newer one."""
+    if os.path.isdir(workdir):
+        for d in os.listdir(workdir):
+            if d.startswith(f"it{it:03d}_t"):
+                shutil.rmtree(os.path.join(workdir, d), ignore_errors=True)
+
+
 def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3), bias=0, step0=0.05,
            m=15, c1=1e-4, precond="none", auto_stage=None, callback=None, log=print):
     """Runs (or resumes) the inversion in work. x0: starting x, or pb -> x, zeros by default;
@@ -220,6 +229,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                 record(0, J, 0., 0., 0, time.time() - t0, gmis)
                 Js.append(J)
         saved = {}
+        _clean_stale(pb.cfg.workdir, it_global + 1)
         # computed once per stage and kept, so that a restart uses the same scaling
         d_fn = f"{work}/precond_{pn}.npy"
         if precond != "none" and not os.path.exists(d_fn):

@@ -419,6 +419,33 @@ def test_line_search_diverged_trial(tmp_path):
     assert sum("failed (J = nan)" in s for s in lines) == 2  # x = 5 and 2.5, then 1.25 accepted
 
 
+def test_restart_removes_stale_trials(tmp_path):
+    """A restart removes the trial directories of the interrupted iteration (redone from trial 0),
+    and only those."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    class Quadratic:
+        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        cfg = SimpleNamespace(workdir=str(tmp_path))
+
+        def bound(self, x):
+            return x, 0
+
+        def evaluate(self, x, tag):
+            return 0.5 * np.sum((x - 1) ** 2), None, x - 1
+
+    run = lambda n: inversion.invert(str(tmp_path / "run"), [("p20", n)],  # noqa: E731
+                                     lambda si, name: Quadratic(), log=lambda s: None)
+    run(1)
+    for d in ("it001_t0", "it002_t2", "it002_t7", "it002_start", "it003_t0"):
+        (tmp_path / d).mkdir()
+    run(2)
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("it")) == \
+        ["it001_t0", "it002_start", "it003_t0"]
+
+
 def test_first_stage_failure_next_stage(tmp_path):
     """A line-search failure at the first stage (J flat: no trial passes Armijo) goes on to the next
     stage, as at the other stages, with the unused iterations; a restart does not go back to it."""
