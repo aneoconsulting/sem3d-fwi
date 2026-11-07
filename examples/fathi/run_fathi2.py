@@ -65,9 +65,9 @@ def fathi_case(n):
                 n, "tikhonov" if n == 2 else "tv")
 
 
-def config(workdir, case, pulse_name):
+def config(workdir, case, pulse_name, **kw):
     case = fathi_case(case) if isinstance(case, int) else case
-    return make_config(workdir, case.geometry, pulse_name, sim_time=case.sim_time.get(pulse_name), **case.acq)
+    return make_config(workdir, case.geometry, pulse_name, sim_time=case.sim_time.get(pulse_name), **case.acq, **kw)
 
 
 def observed(pulse_name, case):
@@ -145,6 +145,8 @@ def parser():
     ap.add_argument("--station-extent", type=float, default=None, help="half side of the station grid, m, default 17.5")
     ap.add_argument("--loads", nargs="+", default=None, choices=("z", "x", "y", "zs"),
                     help="one shot per load (fathi.LOADS), default z")
+    ap.add_argument("--nprocs", type=int, default=4,
+                    help="MPI ranks per simulation of the inversion (the data keep theirs: computed once, shared)")
     ap.add_argument("--data-only", action="store_true", help="compute the data of every stage and stop")
     ap.add_argument("--pml", choices=("copy", "follow", "true"), default="follow",
                     help="PML properties: the mean of each mesh layer (follow), the model extended point by "
@@ -187,7 +189,7 @@ def invert(args, case):
     truth = {}
 
     def make_problem(si, pn):
-        cfg = config(f"{work}/{pn}", case, pn)
+        cfg = config(f"{work}/{pn}", case, pn, nprocs=args.nprocs)
         lam_t, mu_t, rho = case.true_model(cfg.grid)
         lam0, mu0, _ = case.initial(cfg.grid)
         truth.update(lam_t=lam_t, mu_t=mu_t)

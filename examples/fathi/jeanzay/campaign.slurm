@@ -2,13 +2,14 @@
 # One node, one inversion of 4 ranks per line of a campaign file (10 lines: the 40 cores), all at once.
 #   sbatch examples/fathi/jeanzay/campaign.slurm examples/fathi/jeanzay/campaigns/case3_start.txt
 # A run stopped by the time limit resumes where it was when the same file is submitted again.
+# Not exclusive: fewer cores with --ntasks (a few long runs: sbatch --qos=qos_cpu-t4 --time=100:00:00
+# --ntasks=20 ...), and other ranks per run with --nprocs in the line (their sum: --ntasks).
 #SBATCH --job-name=fwi-campaign
 #SBATCH --partition=cpu_p1
 #SBATCH --qos=qos_cpu-t3
 #SBATCH --nodes=1
 #SBATCH --ntasks=40
 #SBATCH --hint=nomultithread
-#SBATCH --exclusive
 #SBATCH --time=20:00:00
 #SBATCH --output=%x-%j.out
 

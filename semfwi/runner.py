@@ -20,6 +20,11 @@ class Runner:
     def __init__(self, cfg):
         self.cfg = cfg
         self.mesh_dir = os.path.join(cfg.workdir, "mesh")
+        # partitioned for another number of ranks (a run resumed with more ranks): kept, another one beside it
+        if os.path.exists(f"{self.mesh_dir}/mesh.input"):
+            with open(f"{self.mesh_dir}/mesh.input") as f:
+                if int(f.readline()) != cfg.nprocs:
+                    self.mesh_dir += f"_n{cfg.nprocs}"
 
     def env(self):
         """Simulation environment: sem3d_bin, then MPI_BIN if set, prepended to PATH;
@@ -61,8 +66,11 @@ class Runner:
         An existing directory is kept: run() only reruns the computation if the inputs changed."""
         self.mesh()
         os.makedirs(d, exist_ok=True)
+        link = os.path.abspath(f"{self.mesh_dir}/sem")
+        if os.path.islink(f"{d}/sem") and os.readlink(f"{d}/sem") != link:  # mesh of another number of ranks
+            os.remove(f"{d}/sem")
         if not os.path.lexists(f"{d}/sem"):
-            os.symlink(os.path.abspath(f"{self.mesh_dir}/sem"), f"{d}/sem")
+            os.symlink(link, f"{d}/sem")
         shutil.copy(f"{self.mesh_dir}/material.input", d)
 
     @staticmethod

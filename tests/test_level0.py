@@ -140,6 +140,44 @@ def test_file_model_equals_material_input(tmp_path):
     assert np.max(np.abs(tr[0] - tr[1])) <= 1e-10 * np.max(np.abs(tr[1]))
 
 
+def test_mesh_dir_per_ranks(tmp_path):
+    """A mesh partitioned for another number of ranks is kept; the runner uses another one beside it."""
+    assert Runner(Config(workdir=str(tmp_path), nprocs=4)).mesh_dir == str(tmp_path / "mesh")
+    os.makedirs(tmp_path / "mesh")
+    (tmp_path / "mesh" / "mesh.input").write_text("4\n1\n")
+    assert Runner(Config(workdir=str(tmp_path), nprocs=4)).mesh_dir == str(tmp_path / "mesh")
+    assert Runner(Config(workdir=str(tmp_path), nprocs=2)).mesh_dir == str(tmp_path / "mesh_n2")
+    # a directory prepared with the first mesh, prepared again with 2 ranks: linked to the other one
+    for m in ("mesh", "mesh_n2"):
+        os.makedirs(tmp_path / m / "sem", exist_ok=True)
+        (tmp_path / m / "sem" / "mesh4spec.0000.h5").write_text("")
+        (tmp_path / m / "material.input").write_text("")
+    d = str(tmp_path / "trial")
+    Runner(Config(workdir=str(tmp_path), nprocs=4)).prepare(d)
+    Runner(Config(workdir=str(tmp_path), nprocs=2)).prepare(d)
+    assert os.readlink(f"{d}/sem") == str(tmp_path / "mesh_n2" / "sem")
+
+
+@pytest.mark.sem3d
+@pytest.mark.skipif(not os.environ.get("SEM3D_BIN"), reason="SEM3D_BIN not set")
+def test_resume_with_other_ranks(tmp_path):
+    """Same workdir, 1 then 2 ranks (a run resumed with more ranks): its own mesh, the same traces."""
+    tr = []
+    for n in (1, 2):
+        cfg = Config(workdir=str(tmp_path), sim_time=0.2, nprocs=n, stations=[(262., 233., -141.)],
+                     sources=[sem_io.point_source((163., 181., -77.), (1., 0., 0.), func="ricker", tau=0.1,
+                                                  freq=8.)])
+        runner = Runner(cfg)
+        d = str(tmp_path / f"n{n}")
+        runner.prepare(d)
+        sem_io.write_input(d, cfg, cfg.sources)
+        runner.run(d)
+        tr.append(sem_io.read_traces(d, 1))
+    assert os.path.exists(tmp_path / "mesh" / "sem" / "mesh4spec.0000.h5")
+    assert os.path.exists(tmp_path / "mesh_n2" / "sem" / "mesh4spec.0001.h5")
+    assert np.max(np.abs(tr[0] - tr[1])) <= 1e-10 * np.max(np.abs(tr[1]))
+
+
 @pytest.mark.parametrize("param", ["lame", "vel"])
 def test_chain_rule(param):
     """For J(lambda, mu) = <a, lambda> + <b, mu> + 1/2 <c, mu^2>, the gradient in x derived from
