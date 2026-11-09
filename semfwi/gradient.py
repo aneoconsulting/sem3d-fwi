@@ -10,7 +10,7 @@ correlated the same way (r <-> M-2-r) and the time integral uses the step p dt.
 """
 import numpy as np
 
-from . import model, sem_io
+from . import hexmesh, model, sem_io
 
 
 def kernels(grid, dfwd, dadj, dt, mem=2e8, ranks=None):
@@ -63,7 +63,8 @@ def kernels_from_sem(cfg, dadj):
         K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(2, -1)
         idx, w = model.trilinear(grid, coords)
         if const:  # the points of the layers with constant properties do not depend on the grid
-            keep = np.isin(cfg.layer_index(np.clip(coords[:, 2], -cfg.depth, 0.)), cfg.file_layers)
+            zf = hexmesh.flat_z(cfg, coords[:, 0], coords[:, 1], coords[:, 2])
+            keep = np.isin(cfg.layer_index(np.clip(zf, -cfg.depth, 0.)), cfg.file_layers)
             w = w * keep[:, None]
         for g, p, k in ((gl, pl, K[0]), (gm, pm, K[1])):
             g += model.project(grid, weight * k, idx, w)

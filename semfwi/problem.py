@@ -32,7 +32,7 @@ import zipfile
 
 import numpy as np
 
-from . import config, misfit, model, sem_io
+from . import config, hexmesh, misfit, model, sem_io
 from .backend import Job, LocalBackend
 
 
@@ -104,10 +104,12 @@ class Problem:
             # SEM3D clips the model files to the grid: it must reach the bottom of the layers that read them
             bottom = -sum(cfg.layer_list[i][0] for i in range(max(cfg.file_layers) + 1))
             assert cfg.grid.xmin[2] <= bottom + 1e-6, (cfg.grid.xmin[2], bottom)
-        self.mask = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0)
+        surface = (lambda x, y: hexmesh.surface(cfg, x, y)) if cfg.topography else None
+        self.mask = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0, surface)
         self.n = int(self.mask.sum())
-        # scaling of the descent directions (model.node_scaling), per unknown; None if the grid is not on the GLL nodes
-        d = model.node_scaling(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth), self.mask)
+        # scaling of the descent directions (model.node_scaling), per unknown; None if the grid is not on
+        # the GLL nodes, which a topography moves
+        d = None if cfg.topography else model.node_scaling(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth), self.mask)
         self.scaling = None if d is None else np.tile(d, len(self.active))
         self.nsim = 0
 

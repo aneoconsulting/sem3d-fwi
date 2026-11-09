@@ -4,6 +4,8 @@ import os
 import h5py
 import numpy as np
 
+from . import hexmesh
+
 MATERIAL_SPEC = """material {num} {{
 domain = solid;
 deftype = Lambda_Mu;
@@ -61,23 +63,30 @@ def write_pml_copy(d):
         f.write("".join(PML_COPY_SPEC.format(num=k) for k in pml))
 
 
+def node_layers(cfg):
+    """Mesh layer (cfg.layer_list) of each node of the parameter grid, from its depth in the flat
+    mesh (hexmesh.flat_z); -1 above the free surface."""
+    X, Y, Z = cfg.grid.mesh()
+    zf = hexmesh.flat_z(cfg, X, Y, Z)
+    return np.where(zf > 1e-6, -1, cfg.layer_index(np.minimum(zf, 0.)))
+
+
 def write_pml_materials(d, cfg, lam, mu, rho):
     """Extends the model into the PMLs: each PML material gets the mean properties
-    (over x, y) of the solid layer it depends on, read on the parameter grid, or its constant
-    properties (cfg.layer_props).
+    (over the grid nodes of the layer, below the free surface) of the solid layer it depends on,
+    or its constant properties (cfg.layer_props).
     Rewrites the P lines of material.input (the mesh only stores material indices)."""
     lines = open(f"{d}/material.input").read().splitlines()
     nmat = int(lines[0])
     ipml = lines.index("# PML properties")
     parents = [int(l.split()[-1]) for l in lines[ipml + 2:] if l.strip()]
-    z = cfg.grid.axis(2)
-    layer_of_node = np.array([cfg.layer_of_depth(zz) for zz in z])
+    layer_of_node = node_layers(cfg)
     nl = len(cfg.layer_list)
     const = cfg.layer_props or [None] * nl
     props = []
     for l in range(nl):
         sel = layer_of_node == l
-        lm, mm, rm = const[l] or (a[:, :, sel].mean() for a in (lam, mu, rho))
+        lm, mm, rm = const[l] or (a[sel].mean() for a in (lam, mu, rho))
         props.append((np.sqrt((lm + 2 * mm) / rm), np.sqrt(mm / rm), rm))
     k = 0
     for i in range(1, nmat + 1):
@@ -94,11 +103,10 @@ def write_pml_materials(d, cfg, lam, mu, rho):
 def pml_layer_gradient(cfg, g_layer):
     """Gradient on the grid of the PML properties written by write_pml_materials: those of layer l
     are the means over its nodes, so dJ/dlayer l (g_layer[l]) is shared equally among them."""
-    z = cfg.grid.axis(2)
-    layer_of_node = np.array([cfg.layer_of_depth(zz) for zz in z])
-    count = np.bincount(layer_of_node, minlength=len(g_layer)) * cfg.grid.n[0] * cfg.grid.n[1]
-    per_node = np.where(count > 0, g_layer / np.maximum(count, 1), 0.)[layer_of_node]
-    return np.broadcast_to(per_node, cfg.grid.shape).copy()
+    layer_of_node = node_layers(cfg)
+    count = np.bincount(layer_of_node[layer_of_node >= 0], minlength=len(g_layer))
+    per_layer = np.where(count > 0, g_layer / np.maximum(count, 1), 0.)
+    return np.where(layer_of_node >= 0, per_layer[np.maximum(layer_of_node, 0)], 0.)
 
 
 def read_model(d):
@@ -137,17 +145,24 @@ def project(grid, values, idx, w):
     return out.reshape(grid.shape)
 
 
-def interior_mask(grid, L, depth, x0=0.):
+def interior_mask(grid, L, depth, x0=0., surface=None):
     """Nodes whose trilinear support (clipped to the grid) lies entirely in the physical domain
     [x0, x0 + L]^2 x [-depth, 0], outside the PMLs: only these are inverted, since the gradient
-    is not computed in the PMLs."""
+    is not computed in the PMLs. surface(x, y): elevation of a free surface that replaces z = 0;
+    the nodes above it whose support reaches below it, at its centre or one of its 8 horizontal
+    neighbours, are kept (the medium near the surface depends on them), the others are in the air."""
     X, Y, Z = grid.mesh()
     eps = 1e-6
     lo = [max(grid.xmin[c], -1e30) for c in range(3)]
     hi = list(grid.xmax)
     ok = np.ones(grid.shape, bool)
     for A, c, a, b in ((X, 0, x0, x0 + L), (Y, 1, x0, x0 + L), (Z, 2, -depth, 0.)):
-        ok &= (np.maximum(A - grid.hs[c], lo[c]) >= a - eps) & (np.minimum(A + grid.hs[c], hi[c]) <= b + eps)
+        below = (np.maximum(A - grid.hs[c], lo[c]) >= a - eps)
+        if c == 2 and surface is not None:
+            top = np.max([surface(X + i * grid.hs[0], Y + j * grid.hs[1]) for i in (-1, 0, 1) for j in (-1, 0, 1)], axis=0)
+            ok &= below & (np.maximum(A - grid.hs[c], lo[c]) < top - eps)
+        else:
+            ok &= below & (np.minimum(A + grid.hs[c], hi[c]) <= b + eps)
     return ok
 
 

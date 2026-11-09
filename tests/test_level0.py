@@ -2,6 +2,7 @@
     pytest -q tests            # all
     pytest -q tests -m "not sem3d"
 """
+import dataclasses
 import json
 import os
 
@@ -9,7 +10,7 @@ import h5py
 import numpy as np
 import pytest
 
-from semfwi import misfit, model, optim, sem_io
+from semfwi import hexmesh, misfit, model, optim, sem_io
 from semfwi.config import Config, Grid
 from semfwi.runner import Runner
 
@@ -655,3 +656,106 @@ def test_file_source(tmp_path):
     with pytest.raises(AssertionError):
         sem_io.FileSource((0., 0., 0.), t, f)
 
+
+def _center_jacobian(nodes, elems):
+    """Determinant of the trilinear map at the centre of each element (lower face then upper face,
+    counterclockwise seen from above): positive for a valid element."""
+    v = nodes[elems]  # (nelem, 8, 3)
+    a = (v[:, 1] + v[:, 2] + v[:, 5] + v[:, 6] - v[:, 0] - v[:, 3] - v[:, 4] - v[:, 7]) / 4
+    b = (v[:, 2] + v[:, 3] + v[:, 6] + v[:, 7] - v[:, 0] - v[:, 1] - v[:, 4] - v[:, 5]) / 4
+    c = (v[:, 4] + v[:, 5] + v[:, 6] + v[:, 7] - v[:, 0] - v[:, 1] - v[:, 2] - v[:, 3]) / 4
+    return np.einsum("ij,ij->i", a, np.cross(b, c))
+
+
+def test_hex8_grid_mesh(tmp_path):
+    """hexmesh.grid_mesh: the box of the on-the-fly mesher with its PMLs (sides and bottom), valid
+    elements, interior elements in their layer, 8 lateral PML materials per layer plus 9 at the bottom,
+    each pointing to its layer; material.input lists them as the mesher does."""
+    cfg = Config(workdir="/a", L=400., h_elem=50., x0=-200., npml=2, layers=[(20., 1), (80., 2), (300., 3)])
+    nodes, elems, mats, table = hexmesh.grid_mesh(cfg)
+    nxy, nz = 8 + 4, 1 + 2 + 3 + 2
+    assert elems.shape == (nxy * nxy * nz, 8) and nodes.shape == ((nxy + 1) ** 2 * (nz + 1), 3)
+    assert np.allclose(nodes.min(axis=0), (-300., -300., -600.)) and np.allclose(nodes.max(axis=0), (300., 300., 0.))
+    assert np.all(_center_jacobian(nodes, elems) > 0)
+    c = nodes[elems].mean(axis=1)
+    inner = (np.abs(c[:, 0]) < 200.) & (np.abs(c[:, 1]) < 200.) & (c[:, 2] > -400.)
+    assert np.array_equal(mats[inner], cfg.layer_index(c[inner, 2]))
+    assert np.all(np.array([table[m][0] for m in mats[~inner]]) == "P")
+    assert len(table) == 3 + 3 * 8 + 9
+    for e in np.nonzero(~inner)[0][::7]:
+        typ, layer, (xp, xw, yp, yw, zp, zw) = table[mats[e]]
+        assert layer == cfg.layer_index(c[e, 2]) and (zw != 0) == (c[e, 2] < -400.)
+        assert (xw != 0) == (abs(c[e, 0]) > 200.) and (yw != 0) == (abs(c[e, 1]) > 200.)
+    hexmesh.write(tmp_path, cfg, nodes, elems, mats, table)
+    lines = (tmp_path / "material.input").read_text().splitlines()
+    assert lines[0] == "36" and lines[1].startswith("S ") and lines[4].startswith("P ")
+    assert lines[37] == "# PML properties" and len(lines) == 39 + 33
+    assert (tmp_path / "mesh.input").read_text() == "1\n4\n1\nmesh.h5\n"
+    with h5py.File(tmp_path / "mesh.h5") as f:
+        assert f["Sem3D/Hexa8"].shape == elems.shape and np.array_equal(f["Sem3D/Mat"][:], mats)
+
+
+def test_hex8_topography(tmp_path):
+    """The free surface follows the topography, the mesh is unchanged below topo_depth, the
+    elements stay valid; a topography reaching the PMLs is refused."""
+    x = np.linspace(-400., 400., 81)
+    X, Y = np.meshgrid(x, x)
+    r = np.hypot(X, Y)
+    hill = 60. * np.cos(np.pi * np.minimum(r, 150.) / 300.) ** 2  # zero beyond 150 m
+    np.savez(tmp_path / "topo.npz", x=x, y=x, z=hill)
+    cfg = Config(workdir="/a", L=400., h_elem=50., x0=-200., npml=2, layers=[(400., 8)],
+                 topography=str(tmp_path / "topo.npz"), topo_depth=200.)
+    flat = hexmesh.grid_mesh(cfg)[0]
+    nodes, elems = hexmesh.build(cfg)[:2]
+    top = flat[:, 2] == 0.
+    assert np.allclose(nodes[top, 2], hexmesh.surface_offset(cfg.topography, flat[top, 0], flat[top, 1]))
+    assert nodes[top, 2].max() == pytest.approx(60.)
+    assert np.array_equal(nodes[flat[:, 2] <= -200.], flat[flat[:, 2] <= -200.])
+    assert np.all(_center_jacobian(nodes, elems) > 0)
+    np.savez(tmp_path / "wide.npz", x=x, y=x, z=hill + 1.)
+    with pytest.raises(AssertionError, match="PMLs"):
+        hexmesh.build(dataclasses.replace(cfg, topography=str(tmp_path / "wide.npz")))
+
+
+def _hill_config(tmp_path, **kw):
+    x = np.linspace(-400., 400., 81)
+    X, Y = np.meshgrid(x, x)
+    hill = 60. * np.cos(np.pi * np.minimum(np.hypot(X, Y), 150.) / 300.) ** 2  # zero beyond 150 m
+    np.savez(tmp_path / "topo.npz", x=x, y=x, z=hill)
+    return Config(workdir="/a", L=400., h_elem=50., x0=-200., npml=2, layers=[(100., 4), (300., 4)],
+                  topography=str(tmp_path / "topo.npz"), topo_depth=200., **kw)
+
+
+def test_flat_z(tmp_path):
+    """flat_z undoes follow_surface: the moved mesh nodes come back to the flat ones; identity without
+    topography; positive above the free surface."""
+    cfg = _hill_config(tmp_path)
+    flat = hexmesh.grid_mesh(cfg)[0]
+    moved = hexmesh.build(cfg)[0]
+    assert np.allclose(hexmesh.flat_z(cfg, *moved.T), flat[:, 2])
+    assert hexmesh.flat_z(cfg, 0., 0., 61.) > 0 and hexmesh.flat_z(cfg, 0., 0., 59.) < 0
+    plain = dataclasses.replace(cfg, topography=None)
+    assert np.array_equal(hexmesh.flat_z(plain, *moved.T), moved[:, 2])
+    assert np.allclose(hexmesh.on_surface(cfg, [(0., 0., -10.), (300., 0., 0.)]), [(0., 0., 50.), (300., 0., 0.)])
+
+
+def test_topography_mask_and_layers(tmp_path):
+    """Below a topography: the grid nodes in the air are neither inverted nor counted in the layers;
+    those just above the surface whose support reaches below it are inverted; a node at a given
+    depth below the hill is in the layer of that depth in the flat mesh."""
+    cfg = _hill_config(tmp_path, grid=Grid(xmin=(-190., -190., -390.), h=10., n=(39, 39, 47)))  # up to z = 70
+    surf = lambda x, y: hexmesh.surface(cfg, x, y)
+    m = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0, surf)
+    i0 = 19  # column x = y = 0, surface at 60 m
+    z = cfg.grid.axis(2)
+    assert m[i0, i0][z <= 60.].all() and not m[i0, i0][z > 60.].any()
+    # far from the hill: the nodes up to z = 0 (the one above only touches the surface)
+    assert m[1, 1][z <= 0.].all() and not m[1, 1][z > 0.].any()
+    flat_m = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0)
+    assert np.array_equal(m[1, 1][z < 0.], flat_m[1, 1][z < 0.])
+    layers = model.node_layers(cfg)
+    assert np.all(layers[i0, i0][z > 60.] == -1) and np.all(layers[1, 1][z > 0.] == -1)
+    zf = hexmesh.flat_z(cfg, 0., 0., z)
+    assert np.array_equal(layers[i0, i0][z <= 60.], cfg.layer_index(zf[z <= 60.]))
+    g = model.pml_layer_gradient(cfg, np.array([2., 3.]))
+    assert np.isclose(g.sum(), 5.) and np.all(g[layers == -1] == 0.)

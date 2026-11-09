@@ -57,6 +57,12 @@ class Config:
     # default for all), or (lambda, mu, rho), constant and not inverted (a bedrock below the grid)
     layer_props: list = None
     npml: int = 1
+    # Same grid written by us (hexmesh, HDF5 Hex8 input of the mesher) instead of the on-the-fly
+    # mesher; forced by a topography: npz file (x, y axes, z elevations of shape (len(y), len(x)))
+    # that the free surface follows, the mesh becoming flat at z = -topo_depth
+    mesh_hex8: bool = False
+    topography: str = None
+    topo_depth: float = 0.
     # Strain output: one step every strain_period (the number of steps must be a multiple of it)
     strain_period: int = 1
     # Kernels computed by SEM3D during the adjoint simulation (strain_mode 1 and 2): the forward

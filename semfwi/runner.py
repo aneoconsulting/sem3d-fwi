@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
-from . import sem_io
+from . import hexmesh, sem_io
 
 INPUT_FILES = ("input.spec", "stations.txt", "material.spec", "Lambda.h5", "Mu.h5", "Rho.h5")
 
@@ -51,7 +51,10 @@ class Runner:
         if os.path.exists(f"{d}/sem/mesh4spec.0000.h5"):
             return
         os.makedirs(d, exist_ok=True)
-        sem_io.write_mesher_inputs(d, self.cfg)
+        if self.cfg.mesh_hex8 or self.cfg.topography:
+            hexmesh.write(d, self.cfg, *hexmesh.build(self.cfg))
+        else:
+            sem_io.write_mesher_inputs(d, self.cfg)
         sem_io.write_input(d, self.cfg, [])  # the mesher reads input.spec (ngll in particular)
         with open(f"{d}/mesh.input") as fin, open(f"{d}/mesher.log", "w") as fout:
             subprocess.run(["mesher"], stdin=fin, stdout=fout, stderr=subprocess.STDOUT, cwd=d,
