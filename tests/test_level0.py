@@ -178,7 +178,7 @@ def test_resume_with_other_ranks(tmp_path):
     assert np.max(np.abs(tr[0] - tr[1])) <= 1e-10 * np.max(np.abs(tr[1]))
 
 
-@pytest.mark.parametrize("param", ["lame", "vel"])
+@pytest.mark.parametrize("param", ["lame", "vel", "kg"])
 def test_chain_rule(param):
     """For J(lambda, mu) = <a, lambda> + <b, mu> + 1/2 <c, mu^2>, the gradient in x derived from
     dJ/dlambda and dJ/dmu by Problem.chain matches a centered finite difference."""
@@ -430,6 +430,39 @@ def test_bound():
     assert np.isclose(mu[m][0], 0.2 * pb.mu_ref[m][0]) and np.all(mu[m] >= 0.2 * pb.mu_ref[m] * (1 - 1e-12))
     assert np.isclose(k[1], 0.2 * k_ref[1]) and np.all(k >= 0.2 * k_ref * (1 - 1e-12))
     assert np.array_equal(xb[2:n], x[2:n]) and np.array_equal(xb[n + 2:], x[n + 2:])
+
+
+def test_bound_kg():
+    """Problem.bound in (K, G): the same feasible set as in (lambda, mu) (G >= 0.2 G_ref, K >= 0.2 K_ref), a node
+    out of bounds in one block moved in both blocks only where needed; a model within the bounds is left unchanged."""
+    from semfwi.problem import Problem
+    cfg = Config(workdir="/nonexistent")
+    one = np.ones(cfg.grid.shape)
+    pb = Problem(cfg, None, None, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param="kg")
+    x = 0.1 * RNG.standard_normal(pb.size)
+    assert pb.bound(x) == (x, 0)
+    n = pb.n
+    x[n] = -0.95             # G of node 0 at 5 % of G_ref
+    x[1] = -3.               # K of node 1 negative
+    xb, moved = pb.bound(x)
+    assert moved == 2
+    lam, mu, _ = pb.to_model(xb)
+    m = pb.mask
+    k = (lam + 2 * mu / 3)[m]
+    assert np.isclose(mu[m][0], 0.2 * pb.mu_ref[m][0]) and np.isclose(k[1], 0.2 * pb.k_ref[m][1])
+    assert np.all(mu[m] >= 0.2 * pb.mu_ref[m] * (1 - 1e-12)) and np.all(k >= 0.2 * pb.k_ref[m] * (1 - 1e-12))
+    assert xb[0] == x[0] and xb[n + 1] == x[n + 1]  # the other block of each moved node is unchanged
+    assert np.array_equal(xb[2:n], x[2:n]) and np.array_equal(xb[n + 2:], x[n + 2:])
+
+
+def test_poisson():
+    """nu = 0.25 for lambda = mu, 0.5 in the incompressible limit, and the K, G form (3K - 2G) / (2 (3K + G))."""
+    from semfwi.problem import poisson
+    assert np.isclose(poisson(80e6, 80e6), 0.25)
+    assert np.isclose(poisson(1e15, 1e6), 0.5)
+    lam, mu = 4.56e9, 84e6
+    K = lam + 2 * mu / 3
+    assert np.isclose(poisson(lam, mu), (3 * K - 2 * mu) / (2 * (3 * K + mu)))
 
 
 def test_line_search_diverged_trial(tmp_path):

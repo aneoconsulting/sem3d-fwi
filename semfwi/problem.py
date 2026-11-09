@@ -4,11 +4,14 @@ Unknowns on the interior grid nodes (model.interior_mask), as relative perturbat
 for the active parameters (active, a subset of ("a", "b")):
   param = "lame" : a = lambda / lambda_ref - 1, b = mu / mu_ref - 1;
   param = "vel"  : a = Vp / Vp_ref - 1,         b = Vs / Vs_ref - 1,
-                   with mu = rho Vs^2, lambda = rho Vp^2 - 2 rho Vs^2.
+                   with mu = rho Vs^2, lambda = rho Vp^2 - 2 rho Vs^2;
+  param = "kg"   : a = K / K_ref - 1,           b = G / G_ref - 1,
+                   bulk and shear moduli, with lambda = K - 2 G / 3, mu = G.
 An inactive parameter keeps the value from fixed (the reference model by default). rho and the
 nodes close to the PMLs stay fixed. SEM3D always reads lambda and mu; for velocities, the gradient
 follows from the chain rule:
-  dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda).
+  dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda),
+  dJ/dK = dJ/dlambda,              dJ/dG = dJ/dmu - 2/3 dJ/dlambda.
 
 pml: "follow" (default: each PML takes the mean of its mesh layer, so a perturbation anywhere in a
 layer changes its PMLs; the gradient includes this dependence, from the PML kernels), "copy" (SEM3D extends the current model
@@ -64,7 +67,7 @@ def observed(cfg, runner, ddir, lam, mu, rho, pml=None):
 
 
 def model_errors(pb, x, lam_t, mu_t):
-    """Relative errors to the true model on the inverted nodes, in (lambda, mu) and in (Vp, Vs):
+    """Relative errors to the true model on the inverted nodes, in (lambda, mu), (Vp, Vs) and K:
     ||m - m_true|| / ||m_ref - m_true|| (1: no better than the reference model of pb)."""
     lam, mu, rho = pb.to_model(x)
     m = pb.mask
@@ -72,21 +75,29 @@ def model_errors(pb, x, lam_t, mu_t):
     vp_t, vs_t = np.sqrt((lam_t + 2 * mu_t) / rho), np.sqrt(mu_t / rho)
     out = {}
     for name, a, t, ref in (("lambda", lam, lam_t, pb.lam_ref), ("mu", mu, mu_t, pb.mu_ref),
-                            ("vp", vp, vp_t, pb.vp_ref), ("vs", vs, vs_t, pb.vs_ref)):
+                            ("vp", vp, vp_t, pb.vp_ref), ("vs", vs, vs_t, pb.vs_ref),
+                            ("k", lam + 2 * mu / 3, lam_t + 2 * mu_t / 3, pb.k_ref)):
         out["err_" + name] = float(np.linalg.norm((a - t)[m]) / np.linalg.norm((t - ref)[m]))
     return out
+
+
+def poisson(lam, mu):
+    """Poisson's ratio nu = lambda / (2 (lambda + mu)): between -1 and 1/2 for a physical solid,
+    0.25 for lambda = mu, close to 1/2 for a saturated soil."""
+    return lam / (2 * (lam + mu))
 
 
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
                  fixed=None, pml="follow", backend=None):
-        assert param in ("lame", "vel"), param
+        assert param in ("lame", "vel", "kg"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
         self.active = tuple(active)
         self.lam_ref, self.mu_ref, self.rho_ref = lam_ref, mu_ref, rho_ref
         self.vp_ref = np.sqrt((lam_ref + 2 * mu_ref) / rho_ref)
         self.vs_ref = np.sqrt(mu_ref / rho_ref)
+        self.k_ref = lam_ref + 2 * mu_ref / 3
         self.fixed = fixed if fixed is not None else (lam_ref, mu_ref)
         self.pml = pml
         self.mask = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0)
@@ -120,6 +131,13 @@ class Problem:
                 lam[self.mask] = self.lam_ref[self.mask] * (1 + xa)
             if xb is not None:
                 mu[self.mask] = self.mu_ref[self.mask] * (1 + xb)
+        elif self.param == "kg":
+            k, mu = self.fixed[0] + 2 * self.fixed[1] / 3, self.fixed[1].copy()
+            if xa is not None:
+                k[self.mask] = self.k_ref[self.mask] * (1 + xa)
+            if xb is not None:
+                mu[self.mask] = self.mu_ref[self.mask] * (1 + xb)
+            lam = k - 2 * mu / 3
         else:
             vp = np.sqrt((self.fixed[0] + 2 * self.fixed[1]) / rho)
             vs = np.sqrt(self.fixed[1] / rho)
@@ -134,6 +152,8 @@ class Problem:
     def to_x(self, lam, mu):
         if self.param == "lame":
             a, b, a0, b0 = lam, mu, self.lam_ref, self.mu_ref
+        elif self.param == "kg":
+            a, b, a0, b0 = lam + 2 * mu / 3, mu, self.k_ref, self.mu_ref
         else:
             a, b = np.sqrt((lam + 2 * mu) / self.rho_ref), np.sqrt(mu / self.rho_ref)
             a0, b0 = self.vp_ref, self.vs_ref
@@ -144,7 +164,19 @@ class Problem:
         """x with mu >= frac mu_ref and lambda + 2 mu / 3 >= frac (lambda_ref + 2 mu_ref / 3) on every
         inverted node (projection: mu first, then lambda), and the number of nodes moved. A safety net
         for the line-search trials, not a regularization: the drivers log the nodes it moves. param =
-        "lame" only (x unchanged otherwise)."""
+        "lame" or "kg" (x unchanged otherwise); in "kg", the same bounds on G and K."""
+        if self.param == "kg":
+            lo = frac - 1  # G >= frac G_ref, K >= frac K_ref: x >= frac - 1 on each block
+            moved = np.zeros(self.n, bool)
+            for i in range(len(self.active)):
+                moved |= x[i * self.n:(i + 1) * self.n] < lo
+            if not moved.any():
+                return x, 0
+            x = x.copy()  # only the moved nodes are rewritten, the others keep x to the bit
+            for i in range(len(self.active)):
+                sl = x[i * self.n:(i + 1) * self.n]
+                sl[moved] = np.maximum(sl[moved], lo)
+            return x, int(moved.sum())
         if self.param != "lame":
             return x, 0
         lam, mu, _ = self.to_model(x)
@@ -166,6 +198,8 @@ class Problem:
         """Gradient with respect to x from dJ/dlambda and dJ/dmu on the grid."""
         if self.param == "lame":
             ga, gb = gl * self.lam_ref, gm * self.mu_ref
+        elif self.param == "kg":
+            ga, gb = gl * self.k_ref, (gm - 2 * gl / 3) * self.mu_ref
         else:
             lam, mu, rho = self.to_model(x)
             vp, vs = np.sqrt((lam + 2 * mu) / rho), np.sqrt(mu / rho)

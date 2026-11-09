@@ -148,6 +148,9 @@ def parser():
     ap.add_argument("--nprocs", type=int, default=4,
                     help="MPI ranks per simulation of the inversion (the data keep theirs: computed once, shared)")
     ap.add_argument("--data-only", action="store_true", help="compute the data of every stage and stop")
+    ap.add_argument("--param", choices=("lame", "kg"), default="lame",
+                    help="unknowns: (lambda, mu) or the bulk and shear moduli (K, G), with lambda = K - 2 G / 3; "
+                         "'lambda' and 'mu' of the first argument then mean K and G")
     ap.add_argument("--pml", choices=("copy", "follow", "true"), default="follow",
                     help="PML properties: the mean of each mesh layer (follow), the model extended point by "
                          "point by SEM3D (copy, stalls: see problem.py), or frozen at the true model (true)")
@@ -179,7 +182,8 @@ def invert(args, case):
     stages = [(s.split(":")[0], int(s.split(":")[1])) for s in (args.stages or ["p20:20"])]
     name = args.tag or (args.which + ("_bias" if args.bias else "")
                         + (f"_noise{round(100 * args.noise)}" if args.noise else "")
-                        + (f"_{args.precond}" if args.precond != "none" else ""))
+                        + (f"_{args.precond}" if args.precond != "none" else "")
+                        + ("_kg" if args.param == "kg" else ""))
     work = f"{case.root}/{name}"
     active = {"mu": ("b",), "lambda": ("a",), "both": ("a", "b")}[args.which]
     if args.data_only:
@@ -196,12 +200,15 @@ def invert(args, case):
         t0 = time.time()
         dobs = add_noise(observed(pn, case), args.noise, seed=list(PULSES).index(pn))
         print(f"[{pn}] data {time.time() - t0:.0f} s", flush=True)
-        return problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, active=active, fixed=(lam_t, mu_t),
+        return problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, active=active, fixed=(lam_t, mu_t),
                                pml=(lam_t, mu_t, rho) if args.pml == "true" else args.pml)
 
-    def errors(pb, x):  # in lambda and mu only (1: no better than the reference)
+    def errors(pb, x):  # in lambda, mu and K (1: no better than the reference); Poisson's ratio range, inverted nodes
         e = problem.model_errors(pb, x, truth["lam_t"], truth["mu_t"])
-        return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"])
+        lam, mu, _ = pb.to_model(x)
+        nu = problem.poisson(lam, mu)[pb.mask]
+        return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"], err_k=e["err_k"],
+                    nu_min=float(nu.min()), nu_max=float(nu.max()))
 
     x0 = (lambda pb: pb.to_x(*case.start(pb.cfg.grid))) if case.start else None
     inversion.invert(work, stages, make_problem, x0=x0, reg=args.reg or case.reg, eps=args.eps, wp=args.wp,
