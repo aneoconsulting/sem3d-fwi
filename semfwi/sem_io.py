@@ -12,12 +12,15 @@ def write_mesher_inputs(d, cfg):
     lines += [cfg.npml, "0 1", 1]
     with open(f"{d}/mat.dat", "w") as f:
         f.write("".join(f"{x}\n" for x in lines))
-    # Reference properties: the solid reads material.spec, the PMLs are rewritten by
-    # model.write_pml_materials if the profile must be extended
-    vp = np.sqrt((cfg.lam0 + 2 * cfg.mu0) / cfg.rho0)
-    vs = np.sqrt(cfg.mu0 / cfg.rho0)
+    # Reference properties: the layers read from the model files take them from material.spec, the
+    # PMLs are rewritten by model.write_pml_materials if the profile must be extended; a layer with
+    # constant properties (cfg.layer_props) keeps them
+    props = cfg.layer_props or [None] * len(layers)
     with open(f"{d}/mater.in", "w") as f:
-        f.write(f"{len(layers)}\n" + f"S {vp} {vs} {cfg.rho0} 0.0 0.0\n" * len(layers))
+        f.write(f"{len(layers)}\n")
+        for p in props:
+            lam, mu, rho = p or (cfg.lam0, cfg.mu0, cfg.rho0)
+            f.write(f"S {np.sqrt((lam + 2 * mu) / rho)} {np.sqrt(mu / rho)} {rho} 0.0 0.0\n")
     with open(f"{d}/mesh.input", "w") as f:
         f.write(f"{cfg.nprocs}\n1\n")
 
@@ -79,6 +82,29 @@ def point_source(coords, direction, **kw):
              dir="%r %r %r" % tuple(float(x) for x in direction))
     s.update(kw)
     return s
+
+
+class FileSource:
+    """Point source whose time function is read from a file (func = file, linear interpolation, the last
+    value held beyond the last sample): a force along direction, or a moment tensor
+    moment = (Mxx, Myy, Mzz, Mxy, Mxz, Myz) (type = moment, a double couple for instance), scaled by
+    amplitude. t, f: samples of the time function."""
+
+    def __init__(self, coords, t, f, direction=None, moment=None, amplitude=1.):
+        assert (direction is None) != (moment is None), "a force (direction) or a moment tensor (moment)"
+        assert moment is None or len(moment) == 6, moment
+        self.coords, self.t, self.f = coords, np.asarray(t, float), np.asarray(f, float)
+        self.direction, self.moment, self.amplitude = direction, moment, amplitude
+
+    def write(self, d, cfg, tag="L"):
+        fn = f"t{tag}.txt"
+        np.savetxt(f"{d}/{fn}", np.c_[self.t, self.f])
+        s = point_source(self.coords, self.direction or (0., 0., 1.), func="file", time_file=f'"{fn}"',
+                         amplitude=repr(float(self.amplitude)))
+        if self.moment is not None:
+            s["type"] = "moment"
+            s["moment"] = " ".join(repr(float(m)) for m in self.moment)
+        return [s]
 
 
 def write_extended_force(d, tag, X, Y, Z, direction, tau, hist):

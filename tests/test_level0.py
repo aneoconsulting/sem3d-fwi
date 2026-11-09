@@ -2,6 +2,7 @@
     pytest -q tests            # all
     pytest -q tests -m "not sem3d"
 """
+import json
 import os
 
 import h5py
@@ -573,3 +574,84 @@ def test_depth_preconditioner_keeps_scaling():
         assert np.allclose(r, r[:, :1, :1, :]), kind  # one factor per block and depth
         if kind == "block":
             assert np.allclose(r, r[:, :1, :1, :1])
+
+
+def test_anisotropic_grid():
+    """Grid with one spacing per axis: axes, trilinear interpolation exact on linear fields, interior mask
+    one step per axis away from the PMLs, and the configuration round trip."""
+    from semfwi import config
+    g = Grid(xmin=(-100., -100., -20.), h=(50., 50., 5.), n=(5, 5, 5))
+    assert g.hs == (50., 50., 5.) and not g.isotropic and g.xmax == (100., 100., 0.)
+    assert np.allclose(g.axis(2), [-20., -15., -10., -5., 0.])
+    pts = np.array(g.xmin) + RNG.random((200, 3)) * (np.array(g.xmax) - np.array(g.xmin))
+    idx, w = model.trilinear(g, pts)
+    X, Y, Z = g.mesh()
+    f = 1. + 2 * X - 3 * Y + 0.5 * Z
+    assert np.allclose(model.interpolate(g, f, idx, w), 1. + pts @ [2., -3., 0.5])
+    m = model.interior_mask(g, 150., 12., -75.)  # domain [-75, 75]^2 x [-12, 0], inside the grid
+    assert X[m].min() == X[m].max() == 0. and Z[m].min() == -5. and Z[m].max() == 0.
+    assert model.node_volume(g, 100., (-100., -100., -20.)) is None
+    cfg = Config(workdir="/a", grid=g, layers=[(20., 4), (80., 2)], layer_props=[None, (4e9, 2e9, 2000.)])
+    back = config.from_dict(json.loads(json.dumps(config.to_dict(cfg))), "/b")
+    assert back.grid.hs == g.hs and back.grid.axis(2).tolist() == g.axis(2).tolist() and back.file_layers == [0]
+
+
+def test_tv_gradient_anisotropic():
+    """Total variation on a grid with one spacing per axis: the gradient matches a centered finite difference."""
+    from semfwi.inversion import TotalVariation
+    from semfwi.problem import Problem
+    g = Grid(xmin=(0., 0., -40.), h=(50., 50., 5.), n=(7, 7, 9))
+    cfg = Config(workdir="/nonexistent", L=300., depth=40., grid=g)
+    one = np.ones(g.shape)
+    pb = Problem(cfg, None, None, 80e6 * one, 80e6 * one, 2000. * one, param="kg")
+    tv = TotalVariation(pb)
+    x = 0.1 * RNG.standard_normal(pb.size)
+    dx = RNG.standard_normal(pb.size)
+    h = 1e-6
+    fd = (tv.value(x + h * dx) - tv.value(x - h * dx)) / (2 * h)
+    assert np.isclose(tv.grad(x) @ dx, fd, rtol=1e-5)
+
+
+def test_layer_index():
+    cfg = Config(workdir="/a", depth=100., layers=[(17.3, 1), (72.5, 1), (10.2, 1)])
+    z = np.array([0., -10., -17.3, -17.31, -89.8, -95., -100., -150.])
+    assert cfg.layer_index(z).tolist() == [cfg.layer_of_depth(v) for v in z] == [0, 0, 0, 1, 1, 2, 2, 2]
+
+
+def test_constant_layers_inputs(tmp_path):
+    """layer_props: the constant layers get their properties in mater.in and no entry in material.spec,
+    the others read the model files."""
+    cfg = Config(workdir="/a", layers=[(20., 1), (80., 2), (300., 2)],
+                 layer_props=[None, None, (3.6e9, 1.8e9, 2600.)])
+    sem_io.write_mesher_inputs(tmp_path, cfg)
+    lines = (tmp_path / "mater.in").read_text().splitlines()
+    assert lines[0] == "3"
+    vp, vs, rho = (float(v) for v in lines[3].split()[1:4])
+    assert np.isclose(vp, np.sqrt((3.6e9 + 3.6e9) / 2600.)) and np.isclose(vs, np.sqrt(1.8e9 / 2600.)) and rho == 2600.
+    assert lines[1] == lines[2] and np.isclose(float(lines[1].split()[2]), np.sqrt(cfg.mu0 / cfg.rho0))
+    one = np.ones(cfg.grid.shape)
+    model.write_model(tmp_path, cfg.grid, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one,
+                      nmat=3, file_layers=cfg.file_layers)
+    spec = (tmp_path / "material.spec").read_text()
+    assert "material 0 {" in spec and "material 1 {" in spec and "material 2" not in spec
+
+
+def test_file_source(tmp_path):
+    """FileSource: time function written next to input.spec, moment tensor in SEM3D's order
+    (Mxx, Myy, Mzz, Mxy, Mxz, Myz), amplitude; a force keeps type = impulse and its direction."""
+    cfg = Config(workdir=str(tmp_path), stations=[(0., 0., 0.)])
+    t = np.arange(5) * 1e-3
+    f = np.array([0., 1., 3., 2., 2.])
+    m = (0., 0., 0., 1., 0., 0.)
+    srcs = sem_io.materialize_sources(tmp_path, cfg, [sem_io.FileSource((1., 2., -300.), t, f, moment=m, amplitude=1e18),
+                                                      sem_io.FileSource((0., 0., 0.), t, f, direction=(0., 0., -1.))])
+    sem_io.write_input(tmp_path, cfg, srcs)
+    spec = (tmp_path / "input.spec").read_text()
+    assert spec.count("func = file;") == 2 and spec.count("type = moment;") == 1 and spec.count("type = impulse;") == 1
+    assert "moment = 0.0 0.0 0.0 1.0 0.0 0.0;" in spec and "amplitude = 1e+18;" in spec
+    assert 'time_file = "tL0.txt";' in spec and 'time_file = "tL1.txt";' in spec and "dir = 0.0 0.0 -1.0;" in spec
+    assert np.array_equal(np.loadtxt(tmp_path / "tL0.txt"), np.c_[t, f])
+    assert set(Runner.input_files(str(tmp_path))) >= {"tL0.txt", "tL1.txt"}  # in the cache key
+    with pytest.raises(AssertionError):
+        sem_io.FileSource((0., 0., 0.), t, f)
+

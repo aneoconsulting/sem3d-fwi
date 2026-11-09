@@ -73,7 +73,8 @@ class TotalVariation(Tikhonov):
         super().__init__(pb)
         self.eps = eps
         refs = {"a": pb.lam_ref if pb.param == "lame" else pb.k_ref, "b": pb.mu_ref}
-        self.scale = [1e-6 * float(np.mean(refs[p][pb.mask])) / pb.cfg.grid.h for p in pb.active]
+        # per block and per axis: the differences in MPa/m (grid spacing per axis)
+        self.scale = [[1e-6 * float(np.mean(refs[p][pb.mask])) / h for h in pb.cfg.grid.hs] for p in pb.active]
 
     @staticmethod
     def _diffs(v, s):
@@ -82,7 +83,7 @@ class TotalVariation(Tikhonov):
             d = np.zeros_like(v)
             sl = [slice(None)] * 3
             sl[a] = slice(None, -1)
-            d[tuple(sl)] = s * np.diff(v, axis=a)
+            d[tuple(sl)] = s[a] * np.diff(v, axis=a)
             out.append(d)
         return out
 
@@ -97,7 +98,7 @@ class TotalVariation(Tikhonov):
             D = np.sqrt(sum(di ** 2 for di in d) + self.eps)
             g = np.zeros_like(v)
             for a in range(3):
-                q = 0.5 * s * d[a] / D  # derivative with respect to v[i + e_a] - v[i]
+                q = 0.5 * s[a] * d[a] / D  # derivative with respect to v[i + e_a] - v[i]
                 sl_lo = [slice(None)] * 3
                 sl_hi = [slice(None)] * 3
                 sl_lo[a] = slice(None, -1)

@@ -74,6 +74,8 @@ def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
         os.symlink(os.path.realpath(f"{dfwd}/strain"), link)
         runner.run(dadj)
         return gradient.kernels_from_sem(cfg, dadj)
+    # kernels from the strain files: every point is projected on the grid
+    assert cfg.layer_props is None, "layers with constant properties need the kernels computed in SEM3D"
     sem_io.write_input(dadj, cfg, srcs, save_strain=True)
     runner.run(dadj)
     jobs = [(cfg.grid, dfwd, dadj, cfg.dt, 3e7, [r]) for r in range(cfg.nprocs)]

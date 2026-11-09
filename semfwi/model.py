@@ -32,9 +32,10 @@ def check_bounds(lam, mu, rho):
         raise UnphysicalModel("non-physical model: mu > 0, lambda + 2 mu / 3 > 0 and rho > 0 required")
 
 
-def write_model(d, grid, lam, mu, rho, nmat=1):
+def write_model(d, grid, lam, mu, rho, nmat=1, file_layers=None):
     """lam, mu, rho: arrays (nx, ny, nz), written as (nz, ny, nx) for SEM3D's Fortran order.
-    The nmat solid materials (one mesher layer each) read the same files."""
+    The nmat solid materials (one mesher layer each), or those of file_layers, read the same files;
+    the others keep the constant properties of material.input."""
     check_bounds(lam, mu, rho)
     for name, arr in (("Lambda", lam), ("Mu", mu), ("Rho", rho)):
         assert arr.shape == grid.shape, (name, arr.shape, grid.shape)
@@ -44,7 +45,7 @@ def write_model(d, grid, lam, mu, rho, nmat=1):
             g.attrs["xMinGlob"] = np.array(grid.xmin, dtype="f8")
             g.attrs["xMaxGlob"] = np.array(grid.xmax, dtype="f8")
     with open(f"{d}/material.spec", "w") as f:
-        f.write("".join(MATERIAL_SPEC.format(num=k) for k in range(nmat)))
+        f.write("".join(MATERIAL_SPEC.format(num=k) for k in (range(nmat) if file_layers is None else file_layers)))
 
 
 def write_pml_copy(d):
@@ -62,7 +63,8 @@ def write_pml_copy(d):
 
 def write_pml_materials(d, cfg, lam, mu, rho):
     """Extends the model into the PMLs: each PML material gets the mean properties
-    (over x, y) of the solid layer it depends on, read on the parameter grid.
+    (over x, y) of the solid layer it depends on, read on the parameter grid, or its constant
+    properties (cfg.layer_props).
     Rewrites the P lines of material.input (the mesh only stores material indices)."""
     lines = open(f"{d}/material.input").read().splitlines()
     nmat = int(lines[0])
@@ -71,10 +73,11 @@ def write_pml_materials(d, cfg, lam, mu, rho):
     z = cfg.grid.axis(2)
     layer_of_node = np.array([cfg.layer_of_depth(zz) for zz in z])
     nl = len(cfg.layer_list)
+    const = cfg.layer_props or [None] * nl
     props = []
     for l in range(nl):
         sel = layer_of_node == l
-        lm, mm, rm = (a[:, :, sel].mean() for a in (lam, mu, rho))
+        lm, mm, rm = const[l] or (a[:, :, sel].mean() for a in (lam, mu, rho))
         props.append((np.sqrt((lm + 2 * mm) / rm), np.sqrt(mm / rm), rm))
     k = 0
     for i in range(1, nmat + 1):
@@ -109,7 +112,7 @@ def read_model(d):
 def trilinear(grid, coords):
     """Grid node indices (npts, 8) and weights (npts, 8) of the trilinear interpolation."""
     n = np.array(grid.n)
-    t = (np.asarray(coords) - np.array(grid.xmin)) / grid.h
+    t = (np.asarray(coords) - np.array(grid.xmin)) / np.array(grid.hs)
     i0 = np.clip(np.floor(t).astype(int), 0, n - 2)
     f = np.clip(t - i0, 0, 1)
     idx, w = [], []
@@ -139,12 +142,12 @@ def interior_mask(grid, L, depth, x0=0.):
     [x0, x0 + L]^2 x [-depth, 0], outside the PMLs: only these are inverted, since the gradient
     is not computed in the PMLs."""
     X, Y, Z = grid.mesh()
-    h, eps = grid.h, 1e-6
+    eps = 1e-6
     lo = [max(grid.xmin[c], -1e30) for c in range(3)]
     hi = list(grid.xmax)
     ok = np.ones(grid.shape, bool)
     for A, c, a, b in ((X, 0, x0, x0 + L), (Y, 1, x0, x0 + L), (Z, 2, -depth, 0.)):
-        ok &= (np.maximum(A - h, lo[c]) >= a - eps) & (np.minimum(A + h, hi[c]) <= b + eps)
+        ok &= (np.maximum(A - grid.hs[c], lo[c]) >= a - eps) & (np.minimum(A + grid.hs[c], hi[c]) <= b + eps)
     return ok
 
 
@@ -155,7 +158,7 @@ def node_volume(grid, h_elem, lo):
     The gradient of a node is its kernel times this volume, so that the nodes in the middle of the
     elements get up to 8 times the gradient of their neighbours: dividing by it gives the gradient
     of the continuous field, smooth where the kernel is (None if the grid does not match)."""
-    if abs(2 * grid.h - h_elem) > 1e-9 * h_elem:
+    if not grid.isotropic or abs(2 * grid.h - h_elem) > 1e-9 * h_elem:
         return None
     w = []
     for c in range(3):

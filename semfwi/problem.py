@@ -39,7 +39,7 @@ from .backend import Job, LocalBackend
 
 def write_model(d, cfg, lam, mu, rho, pml):
     """Model files of a run directory, the PMLs as for Problem(pml=...)."""
-    model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list))
+    model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list), file_layers=cfg.file_layers)
     if pml == "copy":
         model.write_pml_copy(d)
     elif pml == "follow":
@@ -100,6 +100,10 @@ class Problem:
         self.k_ref = lam_ref + 2 * mu_ref / 3
         self.fixed = fixed if fixed is not None else (lam_ref, mu_ref)
         self.pml = pml
+        if cfg.layer_props is not None:
+            # SEM3D clips the model files to the grid: it must reach the bottom of the layers that read them
+            bottom = -sum(cfg.layer_list[i][0] for i in range(max(cfg.file_layers) + 1))
+            assert cfg.grid.xmin[2] <= bottom + 1e-6, (cfg.grid.xmin[2], bottom)
         self.mask = model.interior_mask(cfg.grid, cfg.L, cfg.depth, cfg.x0)
         self.n = int(self.mask.sum())
         # scaling of the descent directions (model.node_scaling), per unknown; None if the grid is not on the GLL nodes

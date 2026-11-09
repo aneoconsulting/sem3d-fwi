@@ -50,16 +50,21 @@ def kernels_from_sem(cfg, dadj):
     """dJ/dlambda and dJ/dmu from the kernels accumulated by SEM3D during the adjoint simulation
     (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points.
     dict(gl, gm): all points projected on the grid, the PML points on the nearest edge nodes
-    (PML copy). With PML points (strain_pml), also pml_gl, pml_gm, the part of gl, gm they make up,
+    (PML copy), except those of the layers with constant properties (cfg.layer_props).
+    With PML points (strain_pml), also pml_gl, pml_gm, the part of gl, gm they make up,
     and pml_layer (2, layers): the sums of their kernels by mesh layer of their element, i.e. dJ/dlambda
     and dJ/dmu of the uniform properties of the PMLs of each layer (PML follow)."""
     grid = cfg.grid
     gl, gm = np.zeros(grid.shape), np.zeros(grid.shape)
     pl, pm = np.zeros(grid.shape), np.zeros(grid.shape)
     layer = np.zeros((2, len(cfg.layer_list)))
+    const = cfg.layer_props is not None and len(cfg.file_layers) < len(cfg.layer_list)
     for rank, coords, weight, npml in sem_io.read_strain_geom(dadj):
         K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(2, -1)
         idx, w = model.trilinear(grid, coords)
+        if const:  # the points of the layers with constant properties do not depend on the grid
+            keep = np.isin(cfg.layer_index(np.clip(coords[:, 2], -cfg.depth, 0.)), cfg.file_layers)
+            w = w * keep[:, None]
         for g, p, k in ((gl, pl, K[0]), (gm, pm, K[1])):
             g += model.project(grid, weight * k, idx, w)
             if npml:

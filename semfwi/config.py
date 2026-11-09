@@ -10,10 +10,20 @@ RUNS_DIR = os.path.expanduser(os.environ.get("SEMFWI_RUNS", "~/SEM/exp/runs"))
 
 @dataclass
 class Grid:
-    """Regular parameter grid; xmin and xmax are the positions of the first and last samples."""
+    """Regular parameter grid; xmin and xmax are the positions of the first and last samples. h: one
+    spacing for the three axes, or one per axis (hx, hy, hz)."""
     xmin: tuple = (-50., -50., -450.)
     h: float = 25.
     n: tuple = (21, 21, 19)
+
+    @property
+    def hs(self):
+        """Spacing per axis."""
+        return tuple(float(x) for x in self.h) if np.ndim(self.h) else (float(self.h),) * 3
+
+    @property
+    def isotropic(self):
+        return not np.ndim(self.h)
 
     @property
     def shape(self):
@@ -21,10 +31,10 @@ class Grid:
 
     @property
     def xmax(self):
-        return tuple(self.xmin[c] + self.h * (self.n[c] - 1) for c in range(3))
+        return tuple(self.xmin[c] + self.hs[c] * (self.n[c] - 1) for c in range(3))
 
     def axis(self, c):
-        return self.xmin[c] + self.h * np.arange(self.n[c])
+        return self.xmin[c] + self.hs[c] * np.arange(self.n[c])
 
     def mesh(self):
         return np.meshgrid(*[self.axis(c) for c in range(3)], indexing="ij")
@@ -43,6 +53,9 @@ class Config:
     ngll: int = 5
     x0: float = 0.
     layers: list = None
+    # Properties of each layer of layers: None, read from the model files on the parameter grid (the
+    # default for all), or (lambda, mu, rho), constant and not inverted (a bedrock below the grid)
+    layer_props: list = None
     npml: int = 1
     # Strain output: one step every strain_period (the number of steps must be a multiple of it)
     strain_period: int = 1
@@ -84,6 +97,18 @@ class Config:
     def layer_list(self):
         return self.layers or [(self.depth, int(round(self.depth / self.h_elem)))]
 
+    @property
+    def file_layers(self):
+        """Indices of the layers whose properties come from the model files."""
+        props = self.layer_props or [None] * len(self.layer_list)
+        assert len(props) == len(self.layer_list), (len(props), len(self.layer_list))
+        return [i for i, p in enumerate(props) if p is None]
+
+    def layer_index(self, z):
+        """layer_of_depth for an array of depths (z <= 0; deeper points: the last layer)."""
+        bottoms = -np.cumsum([th for th, _ in self.layer_list])
+        return np.minimum(np.sum(np.asarray(z)[..., None] < bottoms[None, :] - 1e-9, axis=-1), len(bottoms) - 1)
+
     def layer_of_depth(self, z):
         """Index of the layer containing depth z (z <= 0)."""
         top = 0.
@@ -119,6 +144,6 @@ def from_dict(d, workdir, sem3d_bin=None):
     """Inverse of to_dict; sources stay empty (they are already written in the inputs)."""
     d = dict(d)
     g = d.pop("grid")
-    grid = Grid(xmin=tuple(g["xmin"]), h=g["h"], n=tuple(g["n"]))
+    grid = Grid(xmin=tuple(g["xmin"]), h=tuple(g["h"]) if np.ndim(g["h"]) else g["h"], n=tuple(g["n"]))
     kw = dict(sem3d_bin=sem3d_bin) if sem3d_bin is not None else {}
     return Config(workdir=workdir, grid=grid, **d, **kw)

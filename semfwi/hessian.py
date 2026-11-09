@@ -45,7 +45,7 @@ def bump(pb, block, point, width=None):
     node closest to point (x, y, z), standard deviation width (one grid step by default)."""
     assert block in pb.active, block
     grid = pb.cfg.grid
-    width = width or grid.h
+    width = width or min(grid.hs)
     node = [grid.axis(c)[np.argmin(np.abs(grid.axis(c) - point[c]))] for c in range(3)]
     X, Y, Z = grid.mesh()
     f = np.exp(-((X - node[0]) ** 2 + (Y - node[1]) ** 2 + (Z - node[2]) ** 2) / (2 * width ** 2))
