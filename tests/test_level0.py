@@ -53,6 +53,12 @@ def test_weighted_cost_and_residual():
     assert np.isclose(misfit.cost(u2, d, dt, w), misfit.cost(u, d, dt, w))
     assert np.isclose(misfit.cost(u, d, dt, np.ones((3, 3))), misfit.cost(u, d, dt))
     assert np.isclose(misfit.cost(np.stack([u, u]), np.stack([d, d]), dt, w), 2 * misfit.cost(u, d, dt, w))
+    # one set of weights per source: the cost is the sum of the costs of the sources with their own set
+    w2 = np.stack([w, RNG.random((3, 3))])
+    U, D = np.stack([u, u2]), np.stack([d, d])
+    assert np.isclose(misfit.cost(U, D, dt, w2), sum(misfit.cost(U[i], D[i], dt, misfit.source_weights(w2, i)) for i in (0, 1)))
+    assert misfit.source_weights(w, 1) is not None and np.array_equal(misfit.source_weights(w, 1), w)
+    assert misfit.source_weights(None, 1) is None
 
 
 def test_trilinear_exact_on_linear_fields():
@@ -298,7 +304,8 @@ def test_worker_compute_matches_local(tmp_path, monkeypatch):
     dobs = RNG.standard_normal((2, cfg.nt, 3)) * 1e-9
     deps = {"m": armonik_io.pack_tree(os.path.realpath(f"{d}/sem")),
             "i": armonik_io.pack(d, Runner.input_files(d)), "d": armonik_io.encode_array(dobs)}
-    payload = json.dumps(dict(version=1, cfg=config.to_dict(cfg), grad=True, mesh="m", inputs="i", dobs="d"))
+    payload = json.dumps(dict(version=armonik_io.VERSION, cfg=config.to_dict(cfg), grad=True, source=0,
+                              mesh="m", inputs="i", dobs="d"))
     monkeypatch.setattr(armonik_worker, "SCRATCH", str(tmp_path / "scratch"))
     (tmp_path / "w").mkdir()
     remote = armonik_io.decode_result(armonik_worker.compute(payload, deps, str(tmp_path / "w")))
@@ -354,11 +361,11 @@ def test_run_source_errors(tmp_path, monkeypatch):
 
     fwd.mkdir()
     with pytest.raises(SimulationError):
-        task.run_source(cfg, R(str(fwd)), str(fwd), str(adj), None, True)
+        task.run_source(cfg, R(str(fwd)), str(fwd), str(adj), None, True, 0)
     assert not (fwd / "strain").exists()
     monkeypatch.setattr(sem_io, "read_traces", lambda d, n: np.zeros((n, cfg.nt, 3)))
     with pytest.raises(task.TaskError):
-        task.run_source(cfg, R(str(adj)), str(fwd), str(adj), np.zeros((1, cfg.nt, 3)), True)
+        task.run_source(cfg, R(str(adj)), str(fwd), str(adj), np.zeros((1, cfg.nt, 3)), True, 0)
     assert not (fwd / "strain").exists() and not (adj / "strain").exists()
 
 

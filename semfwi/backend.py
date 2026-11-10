@@ -27,4 +27,4 @@ class LocalBackend:
 
     def run(self, cfg, runner, jobs):
         with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
-            return list(ex.map(lambda j: task.run_source(cfg, runner, j.fwd, j.adj, j.dobs, j.grad), jobs))
+            return list(ex.map(lambda j: task.run_source(cfg, runner, j.fwd, j.adj, j.dobs, j.grad, j.index), jobs))

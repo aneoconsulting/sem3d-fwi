@@ -76,7 +76,8 @@ class Config:
     # "extended" (3 extended sources on the station grid receiver_grid = (xs, ys, z))
     adjoint: str = "points"
     receiver_grid: tuple = None
-    # Misfit weights, one per station and component (nsta x 3); None: all 1 (misfit.cost)
+    # Misfit weights, one per station and component (nsta x 3), or one set per source (nsrc x nsta x 3);
+    # None: all 1 (misfit.cost)
     weights: list = None
     # Radius (m) of the taper of the gradient around the point sources (model.source_taper): 0 at the
     # source, back to 1 at this distance; 0: none

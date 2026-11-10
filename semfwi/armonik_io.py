@@ -1,7 +1,7 @@
 """Contract between the ArmoniK backend (client) and the worker: one task per source.
 
 Payload (JSON):
-  {"version": 1, "cfg": config.to_dict(cfg), "grad": bool,
+  {"version": 2, "cfg": config.to_dict(cfg), "grad": bool, "source": index in cfg.sources,
    "mesh": id, "inputs": id, "dobs": id or null}
 Data dependencies (ArmoniK result ids referenced in the payload):
   mesh   : tar of the mesher's sem directory (mesh4spec.*), shared by all tasks;
@@ -17,7 +17,7 @@ import tarfile
 
 import numpy as np
 
-VERSION = 1
+VERSION = 2
 
 
 class InvalidPayload(ValueError):

@@ -48,7 +48,7 @@ def compute(payload, deps, workdir):
     armonik_io.unpack(deps[p["inputs"]], dfwd)
     os.symlink(os.path.join(mesh, "sem"), os.path.join(dfwd, "sem"))
     dobs = armonik_io.decode_array(deps[p["dobs"]]) if p["grad"] else None
-    r = task.run_source(cfg, Runner(cfg), dfwd, os.path.join(workdir, "adj"), dobs, p["grad"])
+    r = task.run_source(cfg, Runner(cfg), dfwd, os.path.join(workdir, "adj"), dobs, p["grad"], p["source"])
     return armonik_io.encode_result(r)
 
 

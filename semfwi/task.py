@@ -35,8 +35,9 @@ def prepare_adjoint(dadj, dfwd):
             shutil.copy(f"{dfwd}/{fn}", dadj)
 
 
-def run_source(cfg, runner, dfwd, dadj, dobs, grad):
-    """dfwd: ready forward directory (mesh, model, input.spec with save_strain if grad).
+def run_source(cfg, runner, dfwd, dadj, dobs, grad, source):
+    """dfwd: ready forward directory (mesh, model, input.spec with save_strain if grad); source: index
+    of the source in cfg.sources (its misfit weights).
     Return dict(u = traces (nsta, nt, 3)) and, if grad, gl and gm (dJ/dlambda, dJ/dmu on the grid),
     plus the PML parts of the gradient if the strains include the PMLs (gradient.kernels_from_sem).
     A forward simulation failure propagates as is (SimulationError), any later failure as
@@ -47,7 +48,7 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
         if not grad:
             return dict(u=u)
         try:
-            g = _adjoint(cfg, runner, dfwd, dadj, dobs, u)
+            g = _adjoint(cfg, runner, dfwd, dadj, dobs, u, misfit.source_weights(cfg.weights, source))
         except Exception as e:
             raise TaskError(f"after the forward simulation of {dfwd}: {type(e).__name__}: {e}") from e
         return dict(u=u, **g)
@@ -57,10 +58,10 @@ def run_source(cfg, runner, dfwd, dadj, dobs, grad):
                 shutil.rmtree(f"{d}/strain", ignore_errors=True)
 
 
-def _adjoint(cfg, runner, dfwd, dadj, dobs, u):
-    """Adjoint simulation and kernels projected on the grid: dict(gl, gm, ...)."""
+def _adjoint(cfg, runner, dfwd, dadj, dobs, u, w):
+    """Adjoint simulation and kernels projected on the grid: dict(gl, gm, ...); w: misfit weights of the source."""
     prepare_adjoint(dadj, dfwd)
-    tau, hist = misfit.adjoint_history(misfit.residual(u, dobs, cfg.weights), cfg.dt)
+    tau, hist = misfit.adjoint_history(misfit.residual(u, dobs, w), cfg.dt)
     srcs = sem_io.write_adjoint_sources(dadj, cfg, tau, hist)
     if any(fn.startswith("disp.") for fn in os.listdir(f"{dfwd}/strain")):
         # the forward simulation wrote displacements (strain_mode = 1): SEM3D computes the kernels

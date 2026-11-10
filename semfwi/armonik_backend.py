@@ -104,7 +104,7 @@ class ArmoniKBackend:
             d = dict(mesh=self._mesh_id(j.fwd), inputs=ids[f"inputs-{k}"], dobs=ids.get(f"dobs-{k}"))
             deps.append([v for v in d.values() if v])
             payloads[f"payload-{k}"] = json.dumps(dict(version=armonik_io.VERSION, cfg=cfg_dict,
-                                                       grad=j.grad, **d)).encode()
+                                                       grad=j.grad, source=j.index, **d)).encode()
         pids = self._upload(payloads)
         names = [f"output-{k}" for k in range(len(jobs))]
         meta = self.results.create_results_metadata(names, self.session_id)
