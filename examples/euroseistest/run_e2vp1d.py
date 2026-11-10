@@ -2,7 +2,7 @@
 
     python run_e2vp1d.py site       # site response: sediments / outcrop, against Thomson-Haskell
     python run_e2vp1d.py gradcheck  # adjoint gradient against finite differences, (K, G)
-    python run_e2vp1d.py invert [--iters 20] [--param kg]   # the three sedimentary layers
+    python run_e2vp1d.py invert [--iters 20] [--param kg] [--taper R]   # the three sedimentary layers
 
 site: two forward simulations with the double couple only and the exact layered model (constant
 properties per mesh layer), one with the sediments and one with the bedrock up to the surface; the ratio
@@ -53,6 +53,7 @@ def site(args):
 
 def make_problem(args, work):
     cfg = e2vp.config_1d(work, fmax=args.fmax, sim_time=args.sim_time)
+    cfg.source_taper = args.taper
     data = e2vp.config_1d(f"{ROOT}/data_f{args.fmax:g}", fmax=args.fmax, sim_time=args.sim_time)
     lam_t, mu_t, rho = e2vp.true_model_1d(cfg.grid)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
@@ -83,7 +84,7 @@ def gradcheck(args):
 
 
 def invert(args):
-    work = f"{ROOT}/invert_{args.param}"
+    work = f"{ROOT}/invert_{args.param}" + (f"_taper{args.taper:g}" if args.taper else "")
     truth = {}
 
     def mk(si, pn):
@@ -110,6 +111,7 @@ def main():
     ap.add_argument("--param", choices=("lame", "kg"), default="kg")
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=20)
+    ap.add_argument("--taper", type=float, default=0., help="m, radius of the gradient taper around the sources (invert)")
     args = ap.parse_args()
     args.sim_time = args.sim_time or (16. if args.what == "site" else 8.)
     os.makedirs(ROOT, exist_ok=True)
