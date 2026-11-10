@@ -2,7 +2,8 @@
 
     python run_e2vp1d.py site       # site response: sediments / outcrop, against Thomson-Haskell
     python run_e2vp1d.py gradcheck  # adjoint gradient against finite differences, (K, G)
-    python run_e2vp1d.py invert [--iters 20] [--param kg] [--taper R]   # the three sedimentary layers
+    python run_e2vp1d.py invert [--iters 20] [--param kg] [--taper R] [--freqs 0.5 1] [--sources dc]
+                                [--normalize]   # the three sedimentary layers
 
 site: two forward simulations with the double couple only and the exact layered model (constant
 properties per mesh layer), one with the sediments and one with the bedrock up to the surface; the ratio
@@ -10,7 +11,11 @@ of their mean horizontal amplitude spectra over the stations is the site respons
 vertically incident SH transfer function of the layers (fundamental frequency about 0.67 Hz in the
 paper). gradcheck and invert: the sediments on the parameter grid, data of the true model computed on
 the same grid (inverse crime), double couple and surface force, start from homogeneous sediments
-(the properties of L2). Runs in $SEMFWI_RUNS/e2vp1d.
+(the properties of L2). invert: one stage of --iters iterations per frequency of --freqs (source time
+functions filtered at that frequency, the mesh made for it); --normalize weights each trace of each
+source by the inverse of its observed energy (floor: a tenth of the median over the stations of that
+source), so that the stations near the surface force, 300 times larger, do not dominate the misfit.
+Runs in $SEMFWI_RUNS/e2vp1d.
 """
 import argparse
 import json
@@ -51,12 +56,23 @@ def site(args):
                    f0_sim=float(f0_sim), f0_th=float(f0_th)), open(f"{ROOT}/site.json", "w"))
 
 
-def make_problem(args, work):
-    cfg = e2vp.config_1d(work, fmax=args.fmax, sim_time=args.sim_time)
+def energy_weights(dobs):
+    """(nsrc, nsta, 3): 1 / energy of the observed trace of each source and station, floored at a tenth of
+    the median over the stations of the source (the stations on a nodal plane would otherwise weigh most)."""
+    E = (dobs ** 2).sum(axis=(2, 3))
+    E = np.maximum(E, 0.1 * np.median(E, axis=1, keepdims=True))
+    return np.repeat((1. / E)[:, :, None], 3, axis=2)
+
+
+def make_problem(args, work, fmax):
+    cfg = e2vp.config_1d(work, fmax=fmax, sim_time=args.sim_time, sources=args.sources)
     cfg.source_taper = args.taper
-    data = e2vp.config_1d(f"{ROOT}/data_f{args.fmax:g}", fmax=args.fmax, sim_time=args.sim_time)
+    tag = "" if args.sim_time == 8. else f"_t{args.sim_time:g}"
+    data = e2vp.config_1d(f"{ROOT}/data_f{fmax:g}{tag}", fmax=fmax, sim_time=args.sim_time, sources=args.sources)
     lam_t, mu_t, rho = e2vp.true_model_1d(cfg.grid)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
+    if args.normalize:
+        cfg.weights = energy_weights(dobs).tolist()
     lam0, mu0, _ = e2vp.initial_1d(cfg.grid)
     pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow")
     return pb, (lam_t, mu_t)
@@ -65,7 +81,7 @@ def make_problem(args, work):
 def gradcheck(args):
     """Directional derivative along a smooth bump of K (block a) then of G (block b), centred at
     (0, 0, -50 m) in L2: g . dx against (J(x + h dx) - J(x)) / h."""
-    pb, _ = make_problem(args, f"{ROOT}/gradcheck")
+    pb, _ = make_problem(args, f"{ROOT}/gradcheck", args.fmax)
     x = np.zeros(pb.size)
     J0, _, g = pb.evaluate(x, "x0")
     X, Y, Z = (c[pb.mask] for c in pb.cfg.grid.mesh())
@@ -84,11 +100,15 @@ def gradcheck(args):
 
 
 def invert(args):
-    work = f"{ROOT}/invert_{args.param}" + (f"_taper{args.taper:g}" if args.taper else "")
+    freqs = args.freqs or [args.fmax]
+    work = (f"{ROOT}/invert_{args.param}" + (f"_taper{args.taper:g}" if args.taper else "")
+            + ("" if len(args.sources) == 2 else "_" + "_".join(args.sources))
+            + ("" if freqs == [1.] else "_f" + "-".join(f"{f:g}" for f in freqs))
+            + ("" if args.sim_time == 8. else f"_t{args.sim_time:g}") + ("_norm" if args.normalize else ""))
     truth = {}
 
     def mk(si, pn):
-        pb, t = make_problem(args, f"{work}/{pn}")
+        pb, t = make_problem(args, f"{work}/{pn}", freqs[si])
         truth.update(lam_t=t[0], mu_t=t[1])
         return pb
 
@@ -99,7 +119,7 @@ def invert(args):
         return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"], err_k=e["err_k"],
                     nu_min=float(nu.min()), nu_max=float(nu.max()))
 
-    inversion.invert(work, [(f"f{args.fmax:g}", args.iters)], mk, reg="tv", callback=errors,
+    inversion.invert(work, [(f"f{f:g}", args.iters) for f in freqs], mk, reg="tv", callback=errors,
                      log=lambda s: print(s, flush=True))
 
 
@@ -112,6 +132,9 @@ def main():
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--taper", type=float, default=0., help="m, radius of the gradient taper around the sources (invert)")
+    ap.add_argument("--freqs", type=float, nargs="+", help="Hz, one stage per frequency (invert), default --fmax")
+    ap.add_argument("--sources", nargs="+", choices=("dc", "force"), default=["dc", "force"])
+    ap.add_argument("--normalize", action="store_true", help="misfit weights: 1 / observed energy per source and station")
     args = ap.parse_args()
     args.sim_time = args.sim_time or (16. if args.what == "site" else 8.)
     os.makedirs(ROOT, exist_ok=True)
