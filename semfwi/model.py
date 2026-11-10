@@ -109,6 +109,27 @@ def pml_layer_gradient(cfg, g_layer):
     return np.where(layer_of_node >= 0, per_layer[np.maximum(layer_of_node, 0)], 0.)
 
 
+def source_position(src):
+    """(x, y, z) of a point source: a FileSource or an input.spec source section; None otherwise."""
+    if hasattr(src, "coords"):
+        return tuple(float(c) for c in src.coords)
+    if isinstance(src, dict) and "coords" in src:
+        return tuple(float(c) for c in src["coords"].split())
+    return None
+
+
+def source_taper(grid, positions, radius):
+    """Factor on the grid that removes the gradient near the sources, where the kernels are singular and
+    the inversion would explain the data by changing the medium at the source: sin^2(pi d / (2 radius)) at
+    a distance d < radius of the nearest source, 1 beyond."""
+    X, Y, Z = grid.mesh()
+    w = np.ones(grid.shape)
+    for x, y, z in positions:
+        d = np.sqrt((X - x) ** 2 + (Y - y) ** 2 + (Z - z) ** 2)
+        w *= np.where(d < radius, np.sin(0.5 * np.pi * np.minimum(d / radius, 1.)) ** 2, 1.)
+    return w
+
+
 def read_model(d):
     out = []
     for name in ("Lambda", "Mu", "Rho"):

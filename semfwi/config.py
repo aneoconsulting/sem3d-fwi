@@ -78,6 +78,9 @@ class Config:
     receiver_grid: tuple = None
     # Misfit weights, one per station and component (nsta x 3); None: all 1 (misfit.cost)
     weights: list = None
+    # Radius (m) of the taper of the gradient around the point sources (model.source_taper): 0 at the
+    # source, back to 1 at this distance; 0: none
+    source_taper: float = 0.
     # Time: dt is imposed (M1), courant only serves as a stability bound
     sim_time: float = 0.7
     dt: float = 8e-4

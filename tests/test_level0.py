@@ -759,3 +759,21 @@ def test_topography_mask_and_layers(tmp_path):
     assert np.array_equal(layers[i0, i0][z <= 60.], cfg.layer_index(zf[z <= 60.]))
     g = model.pml_layer_gradient(cfg, np.array([2., 3.]))
     assert np.isclose(g.sum(), 5.) and np.all(g[layers == -1] == 0.)
+
+
+def test_source_taper():
+    """Gradient taper: 0 at a point source, 1 beyond the radius, increasing in between; positions of
+    a FileSource and of an input.spec section; none for a source without a point."""
+    g = Grid(xmin=(-100., -100., -100.), h=10., n=(21, 21, 11))
+    srcs = [sem_io.FileSource((0., 0., 0.), [0., 1.], [0., 1.], direction=(0., 0., -1.)),
+            sem_io.point_source((50., 0., -100.), (0., 0., 1.)), {"type": "extended"}]
+    pos = [p for p in map(model.source_position, srcs) if p is not None]
+    assert pos == [(0., 0., 0.), (50., 0., -100.)]
+    w = model.source_taper(g, pos, 40.)
+    X, Y, Z = g.mesh()
+    d0 = np.sqrt(X ** 2 + Y ** 2 + Z ** 2)
+    d1 = np.sqrt((X - 50.) ** 2 + Y ** 2 + (Z + 100.) ** 2)
+    assert w[10, 10, 10] == 0. and w[15, 10, 0] == 0.
+    assert np.all(w[(d0 >= 40.) & (d1 >= 40.)] == 1.) and np.all(w[(d0 < 40.) | (d1 < 40.)] < 1.)
+    line = w[10:15, 10, 10]  # x = 0 .. 40 at the first source
+    assert np.all(np.diff(line) > 0) and np.isclose(line[2], 0.5)

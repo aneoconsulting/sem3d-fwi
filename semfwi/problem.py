@@ -93,6 +93,9 @@ class Problem:
         assert param in ("lame", "vel", "kg"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
+        # gradient taper around the point sources (cfg.source_taper): a fixed factor, so a preconditioner
+        pos = [p for p in map(model.source_position, cfg.sources) if p is not None]
+        self.taper = model.source_taper(cfg.grid, pos, cfg.source_taper) if cfg.source_taper and pos else None
         self.active = tuple(active)
         self.lam_ref, self.mu_ref, self.rho_ref = lam_ref, mu_ref, rho_ref
         self.vp_ref = np.sqrt((lam_ref + 2 * mu_ref) / rho_ref)
@@ -263,6 +266,8 @@ class Problem:
             layer = sum(r["pml_layer"] for r in results)
             gl = gl + model.pml_layer_gradient(self.cfg, layer[0])
             gm = gm + model.pml_layer_gradient(self.cfg, layer[1])
+        if self.taper is not None:
+            gl, gm = gl * self.taper, gm * self.taper
         return J, u, self.chain(x, gl, gm)
 
     def _result_fn(self, tag, i):
