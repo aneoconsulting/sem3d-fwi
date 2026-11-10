@@ -3,9 +3,11 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "euroseistest"))
 import e2vp  # noqa: E402
+import e2vp2  # noqa: E402
 
 
 def test_moment_tensor():
@@ -61,3 +63,31 @@ def test_time_functions():
         S = np.abs(np.fft.rfft(i1, 4 * len(i1))) * dt
         fr = np.fft.rfftfreq(4 * len(i1), dt)
         assert S[fr > 1.02 * fmax].max() < 1e-2 and np.allclose(S[fr <= 0.5 * fmax], 1., atol=1e-2)
+
+
+needs_e2vp2 = pytest.mark.skipif(not os.path.exists(f"{e2vp2.DATA}/velocity_profile.txt"),
+                                 reason="E2VP2-MODEL archive not found (E2VP2_DIR)")
+
+
+@needs_e2vp2
+def test_e2vp2_basin(tmp_path):
+    """3-D model: the profile at the epicentre (two gradient layers then the bedrock and the crust),
+    the meshed surface brought back to 0 at the edge of the box, stations on it, the source at its depth;
+    the expected values are read from the archive (its values are not copied here)."""
+    npz = tmp_path / "basin.npz"
+    e2vp2.prepare(npz, half=3000., margin=200.)
+    cfg, b = e2vp2.config_3d(str(tmp_path / "c"), npz, fmax=0.5)
+    s0 = b.mesh_surface(0., 0.)
+    s = b._bilinear(b.surface, 0., 0.)
+    t1, t2 = s - b._bilinear(b.mp, 0., 0.), s - b._bilinear(b.bedrock, 0., 0.)
+    assert 0. < t1 < t2
+    d = np.array([0., t1 / 2, t2 - 1e-3, t2 + 1., 3000.])
+    vp, vs, rho = b.properties(np.zeros(5), np.zeros(5), s0 - d)
+    L = e2vp2.read_profile()
+    assert np.allclose(vs, [L[0]["vs"][0], np.mean(L[0]["vs"]), L[1]["vs"][1], L[2]["vs"][0], L[3]["vs"][0]], atol=1.)
+    assert np.allclose(vp[[0, 3, 4]], [L[0]["vp"][0], L[2]["vp"][0], L[3]["vp"][0]]) and np.isclose(rho[0], L[0]["rho"][0])
+    edge = np.linspace(-3000., 3000., 13)
+    assert np.allclose(b.mesh_surface(edge, 3000.), 0.) and np.allclose(b.mesh_surface(-3000., edge), 0.)
+    st = np.array(cfg.stations)
+    assert np.allclose(st[:-3, 2], [b.mesh_surface(x, y) for x, y in st[:-3, :2]])
+    assert np.isclose(cfg.sources[0].coords[2], e2vp2.read_source()["z"] - b.z0)
