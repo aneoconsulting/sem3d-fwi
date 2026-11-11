@@ -11,14 +11,27 @@ RUNS_DIR = os.path.expanduser(os.environ.get("SEMFWI_RUNS", "~/SEM/exp/runs"))
 @dataclass
 class Grid:
     """Regular parameter grid; xmin and xmax are the positions of the first and last samples. h: one
-    spacing for the three axes, or one per axis (hx, hy, hz)."""
+    spacing for the three axes, or one per axis (hx, hy, hz).
+    z: explicit ascending z axis instead (as the GLL depths of a layered mesh, model.gll_axis), which sets
+    xmin[2], n[2] and h[2], its mean spacing; h then gives (hx, hy). SEM3D reading only regular grids,
+    the model files are written on file_grid."""
     xmin: tuple = (-50., -50., -450.)
     h: float = 25.
     n: tuple = (21, 21, 19)
+    z: tuple = None
+
+    def __post_init__(self):
+        if self.z is not None:
+            z = np.asarray(self.z, dtype=float)
+            assert z.ndim == 1 and len(z) > 1 and np.all(np.diff(z) > 0), "z: ascending axis"
+            self.z = tuple(z.tolist())
+            self.xmin = (*self.xmin[:2], float(z[0]))
+            self.n = (*self.n[:2], len(z))
+            self.h = (*self.h[:2], float(z[-1] - z[0]) / (len(z) - 1))
 
     @property
     def hs(self):
-        """Spacing per axis."""
+        """Spacing per axis (the mean spacing on an explicit z axis)."""
         return tuple(float(x) for x in self.h) if np.ndim(self.h) else (float(self.h),) * 3
 
     @property
@@ -34,7 +47,29 @@ class Grid:
         return tuple(self.xmin[c] + self.hs[c] * (self.n[c] - 1) for c in range(3))
 
     def axis(self, c):
+        if c == 2 and self.z is not None:
+            return np.array(self.z)
         return self.xmin[c] + self.hs[c] * np.arange(self.n[c])
+
+    def steps(self, c):
+        """Distances between consecutive nodes along axis c (n[c] - 1)."""
+        if c == 2 and self.z is not None:
+            return np.diff(self.z)
+        return np.full(self.n[c] - 1, self.hs[c])
+
+    def file_grid(self):
+        """Regular grid of the model files read by SEM3D, and for each of its z samples the index of the
+        node whose value it takes. Regular grid: itself. Explicit z axis: a z step of at most a quarter of
+        the smallest spacing, each sample taking the value of the nearest node; at the depth of a node,
+        SEM3D interpolates between two samples less than a step away, both nearer to that node than to
+        its neighbours, and finds its value exactly."""
+        if self.z is None:
+            return self, np.arange(self.n[2])
+        z = np.array(self.z)
+        nz = int(np.ceil((z[-1] - z[0]) / (np.diff(z).min() / 4))) + 1
+        fz = np.linspace(z[0], z[-1], nz)
+        k = np.searchsorted(0.5 * (z[1:] + z[:-1]), fz)
+        return Grid(xmin=self.xmin, h=(*self.hs[:2], (z[-1] - z[0]) / (nz - 1)), n=(*self.n[:2], nz)), k
 
     def mesh(self):
         return np.meshgrid(*[self.axis(c) for c in range(3)], indexing="ij")
@@ -154,6 +189,7 @@ def from_dict(d, workdir, sem3d_bin=None):
     """Inverse of to_dict; sources stay empty (they are already written in the inputs)."""
     d = dict(d)
     g = d.pop("grid")
-    grid = Grid(xmin=tuple(g["xmin"]), h=tuple(g["h"]) if np.ndim(g["h"]) else g["h"], n=tuple(g["n"]))
+    grid = Grid(xmin=tuple(g["xmin"]), h=tuple(g["h"]) if np.ndim(g["h"]) else g["h"], n=tuple(g["n"]),
+                z=g.get("z"))
     kw = dict(sem3d_bin=sem3d_bin) if sem3d_bin is not None else {}
     return Config(workdir=workdir, grid=grid, **d, **kw)

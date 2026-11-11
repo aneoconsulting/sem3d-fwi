@@ -35,17 +35,19 @@ def check_bounds(lam, mu, rho):
 
 
 def write_model(d, grid, lam, mu, rho, nmat=1, file_layers=None):
-    """lam, mu, rho: arrays (nx, ny, nz), written as (nz, ny, nx) for SEM3D's Fortran order.
+    """lam, mu, rho: arrays (nx, ny, nz), written as (nz, ny, nx) for SEM3D's Fortran order, on
+    grid.file_grid (the grid itself when regular).
     The nmat solid materials (one mesher layer each), or those of file_layers, read the same files;
     the others keep the constant properties of material.input."""
     check_bounds(lam, mu, rho)
+    fg, k = grid.file_grid()
     for name, arr in (("Lambda", lam), ("Mu", mu), ("Rho", rho)):
         assert arr.shape == grid.shape, (name, arr.shape, grid.shape)
         with h5py.File(f"{d}/{name}.h5", "w") as f:
             g = f.create_group(name)
-            g["samples"] = np.ascontiguousarray(np.transpose(arr, (2, 1, 0)), dtype="f8")
-            g.attrs["xMinGlob"] = np.array(grid.xmin, dtype="f8")
-            g.attrs["xMaxGlob"] = np.array(grid.xmax, dtype="f8")
+            g["samples"] = np.ascontiguousarray(np.transpose(arr[:, :, k], (2, 1, 0)), dtype="f8")
+            g.attrs["xMinGlob"] = np.array(fg.xmin, dtype="f8")
+            g.attrs["xMaxGlob"] = np.array(fg.xmax, dtype="f8")
     with open(f"{d}/material.spec", "w") as f:
         f.write("".join(MATERIAL_SPEC.format(num=k) for k in (range(nmat) if file_layers is None else file_layers)))
 
@@ -130,6 +132,17 @@ def source_taper(grid, positions, radius):
     return w
 
 
+def gll_axis(edges, ngll):
+    """Ascending coordinates of the GLL points of the elements between consecutive edges (ascending),
+    each shared edge once."""
+    from numpy.polynomial import legendre
+    n = ngll - 1
+    xi = np.concatenate([[-1.], np.sort(legendre.Legendre.basis(n).deriv().roots()), [1.]])
+    edges = np.asarray(edges, dtype=float)
+    pts = [a + 0.5 * (b - a) * (xi + 1) for a, b in zip(edges[:-1], edges[1:])]
+    return np.concatenate([p[:-1] for p in pts] + [edges[-1:]])
+
+
 def read_model(d):
     out = []
     for name in ("Lambda", "Mu", "Rho"):
@@ -141,9 +154,14 @@ def read_model(d):
 def trilinear(grid, coords):
     """Grid node indices (npts, 8) and weights (npts, 8) of the trilinear interpolation."""
     n = np.array(grid.n)
-    t = (np.asarray(coords) - np.array(grid.xmin)) / np.array(grid.hs)
+    coords = np.asarray(coords)
+    t = (coords - np.array(grid.xmin)) / np.array(grid.hs)
     i0 = np.clip(np.floor(t).astype(int), 0, n - 2)
     f = np.clip(t - i0, 0, 1)
+    if grid.z is not None:
+        z = np.array(grid.z)
+        i0[:, 2] = np.clip(np.searchsorted(z, coords[:, 2], side="right") - 1, 0, n[2] - 2)
+        f[:, 2] = np.clip((coords[:, 2] - z[i0[:, 2]]) / (z[i0[:, 2] + 1] - z[i0[:, 2]]), 0, 1)
     idx, w = [], []
     for a in (0, 1):
         for b in (0, 1):
@@ -178,12 +196,18 @@ def interior_mask(grid, L, depth, x0=0., surface=None):
     hi = list(grid.xmax)
     ok = np.ones(grid.shape, bool)
     for A, c, a, b in ((X, 0, x0, x0 + L), (Y, 1, x0, x0 + L), (Z, 2, -depth, 0.)):
-        below = (np.maximum(A - grid.hs[c], lo[c]) >= a - eps)
+        if c == 2 and grid.z is not None:  # previous and next nodes of an explicit z axis
+            z = np.array(grid.z)
+            prev = np.broadcast_to(np.concatenate([z[:1], z[:-1]]), A.shape)
+            nxt = np.broadcast_to(np.concatenate([z[1:], z[-1:]]), A.shape)
+        else:
+            prev, nxt = A - grid.hs[c], A + grid.hs[c]
+        below = (np.maximum(prev, lo[c]) >= a - eps)
         if c == 2 and surface is not None:
             top = np.max([surface(X + i * grid.hs[0], Y + j * grid.hs[1]) for i in (-1, 0, 1) for j in (-1, 0, 1)], axis=0)
-            ok &= below & (np.maximum(A - grid.hs[c], lo[c]) < top - eps)
+            ok &= below & (np.maximum(prev, lo[c]) < top - eps)
         else:
-            ok &= below & (np.minimum(A + grid.hs[c], hi[c]) <= b + eps)
+            ok &= below & (np.minimum(nxt, hi[c]) <= b + eps)
     return ok
 
 

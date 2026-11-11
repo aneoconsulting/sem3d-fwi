@@ -716,6 +716,74 @@ def test_tv_gradient_anisotropic():
     assert np.isclose(tv.grad(x) @ dx, fd, rtol=1e-5)
 
 
+def test_explicit_z_grid(tmp_path):
+    """Grid on an explicit z axis (GLL depths of two elements): axes, trilinear interpolation exact on
+    fields linear between the nodes, interior mask one node away from the PMLs, model files on a regular
+    grid where SEM3D's interpolation finds each node's value at its depth, configuration round trip."""
+    from semfwi import config
+    z = model.gll_axis([-30., -20., 0.], 5)
+    assert len(z) == 9 and np.allclose(z[[0, 4, 8]], [-30., -20., 0.]) and np.allclose(z[1] + 30., 10. * (1 - np.sqrt(3 / 7)) / 2)
+    g = Grid(xmin=(-100., -100.), h=(50., 50.), n=(5, 5), z=z)
+    assert g.shape == (5, 5, 9) and g.xmin[2] == -30. and g.xmax[2] == 0. and np.allclose(g.axis(2), z)
+    assert np.allclose(g.steps(2), np.diff(z)) and np.allclose(g.steps(0), 50.)
+    X, Y, Z = g.mesh()
+    pts = np.array(g.xmin) + RNG.random((300, 3)) * (np.array(g.xmax) - np.array(g.xmin))
+    f = 1. + 2 * X - 3 * Y + np.sin(Z / 7.)  # linear in x, y; any values on the z nodes
+    k = np.clip(np.searchsorted(z, pts[:, 2], side="right") - 1, 0, len(z) - 2)
+    s = (pts[:, 2] - z[k]) / (z[k + 1] - z[k])
+    exact = 1. + pts[:, :2] @ [2., -3.] + (1 - s) * np.sin(z[k] / 7.) + s * np.sin(z[k + 1] / 7.)
+    assert np.allclose(model.interpolate(g, f, *model.trilinear(g, pts)), exact)
+    idx, w = model.trilinear(g, np.array([[30., -20., zz] for zz in z]))
+    assert np.allclose(model.interpolate(g, f, idx, w), 1. + 2 * 30. + 3 * 20. + np.sin(z / 7.))  # the node values
+    m = model.interior_mask(g, 150., 25., -75.)  # domain [-75, 75]^2 x [-25, 0]: z support [z[k-1], z[k+1]]
+    assert Z[m].min() == z[3] and Z[m].max() == 0.  # z[2] = -25
+    # model files: SEM3D's interpolation (build_prop_files.F90) at the node depths, within 1e-9 m
+    mu = 1e8 * (2. + np.sin(X / 30.) + np.cos(Z))
+    model.write_model(tmp_path, g, mu, mu, np.full(g.shape, 2000.))
+    with h5py.File(tmp_path / "Mu.h5") as h:
+        var, lo, hi = np.transpose(h["Mu/samples"][...], (2, 1, 0)), h["Mu"].attrs["xMinGlob"], h["Mu"].attrs["xMaxGlob"]
+    NN = np.array(var.shape)
+    step = (hi - lo) / (NN - 1)
+    assert NN[2] > 4 * 30. / np.diff(z).min()
+    for i, j in ((0, 0), (2, 3), (4, 4)):
+        for kz, zz in enumerate(z):
+            for dz in (-1e-9, 0., 1e-9):
+                xx = np.array([g.axis(0)[i], g.axis(1)[j], zz + dz])
+                pos = (xx - lo) / step
+                ii = np.clip(np.floor(pos).astype(int), 0, NN - 2)
+                aa = np.clip(pos - ii, 0., 1.)
+                val = sum(var[ii[0] + a, ii[1] + b, ii[2] + c] * (aa[0] if a else 1 - aa[0])
+                          * (aa[1] if b else 1 - aa[1]) * (aa[2] if c else 1 - aa[2])
+                          for a in (0, 1) for b in (0, 1) for c in (0, 1))
+                assert np.isclose(val, mu[i, j, kz], rtol=1e-12), (i, j, kz, dz)
+    cfg = Config(workdir="/a", grid=g)
+    back = config.from_dict(json.loads(json.dumps(config.to_dict(cfg))), "/b")
+    assert back.grid.shape == g.shape and np.allclose(back.grid.axis(2), z) and back.grid.hs == g.hs
+
+
+def test_tv_explicit_z():
+    """Total variation on an explicit z axis: the gradient matches a centered finite difference, and a
+    profile linear in z costs the same on that axis and on a regular one (quadrature of the integral)."""
+    from semfwi.inversion import TotalVariation
+    from semfwi.problem import Problem
+    vals = []
+    for z in (model.gll_axis([-40., -10., 0.], 5), np.linspace(-40., 0., 9)):
+        g = Grid(xmin=(0., 0.), h=(50., 50.), n=(7, 7), z=z)
+        cfg = Config(workdir="/nonexistent", L=300., depth=40., grid=g)
+        one = np.ones(g.shape)
+        pb = Problem(cfg, None, None, 80e6 * one, 80e6 * one, 2000. * one, param="kg")
+        tv = TotalVariation(pb, eps=1e-12)
+        x = 0.1 * RNG.standard_normal(pb.size)
+        dx = RNG.standard_normal(pb.size)
+        h = 1e-6
+        fd = (tv.value(x + h * dx) - tv.value(x - h * dx)) / (2 * h)
+        assert np.isclose(tv.grad(x) @ dx, fd, rtol=1e-5)
+        Z = g.mesh()[2][pb.mask]
+        lin = np.concatenate([0.01 * Z, 0.01 * Z])  # x = 0.01 z: |grad m| constant
+        vals.append(tv.value(lin))
+    assert np.isclose(vals[0], vals[1], rtol=1e-6)
+
+
 def test_layer_index():
     cfg = Config(workdir="/a", depth=100., layers=[(17.3, 1), (72.5, 1), (10.2, 1)])
     z = np.array([0., -10., -17.3, -17.31, -89.8, -95., -100., -150.])

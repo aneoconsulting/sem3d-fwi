@@ -67,17 +67,23 @@ class Tikhonov:
 
 
 class TotalVariation(Tikhonov):
-    """J_reg(x) = 1/2 sum_blocks sum_nodes sqrt(|grad m|^2 + eps) on the grid (eq. 9), grad m in MPa/m
+    """J_reg(x) = 1/2 sum_blocks sum_nodes w sqrt(|grad m|^2 + eps) on the grid (eq. 9), grad m in MPa/m
     by forward differences (zero at the last node of each axis), m = m_ref (1 + x) with a
-    homogeneous reference (as the 80 MPa initial model), param = "lame" (m = lambda, mu) or "kg" (m = K, G)."""
+    homogeneous reference (as the 80 MPa initial model), param = "lame" (m = lambda, mu) or "kg" (m = K, G).
+    w: the z spacing after the node (before it for the last node) over the mean spacing, 1 on a regular
+    grid, so that the sum stays a quadrature of the integral on an explicit z axis."""
 
     def __init__(self, pb, eps=0.01):
         assert pb.param in ("lame", "kg"), pb.param
         super().__init__(pb)
         self.eps = eps
         refs = {"a": pb.lam_ref if pb.param == "lame" else pb.k_ref, "b": pb.mu_ref}
-        # per block and per axis: the differences in MPa/m (grid spacing per axis)
-        self.scale = [[1e-6 * float(np.mean(refs[p][pb.mask])) / h for h in pb.cfg.grid.hs] for p in pb.active]
+        grid = pb.cfg.grid
+        # per block and per axis: the differences in MPa/m (spacing per axis, per interval along z)
+        inv = [1. / grid.steps(c) for c in range(3)]
+        self.scale = [[1e-6 * float(np.mean(refs[p][pb.mask])) * i for i in inv] for p in pb.active]
+        dz = grid.steps(2)
+        self.w = np.concatenate([dz, dz[-1:]]) / dz.mean()
 
     @staticmethod
     def _diffs(v, s):
@@ -86,12 +92,14 @@ class TotalVariation(Tikhonov):
             d = np.zeros_like(v)
             sl = [slice(None)] * 3
             sl[a] = slice(None, -1)
-            d[tuple(sl)] = s[a] * np.diff(v, axis=a)
+            shape = [1, 1, 1]
+            shape[a] = -1
+            d[tuple(sl)] = s[a].reshape(shape) * np.diff(v, axis=a)
             out.append(d)
         return out
 
     def value(self, x):
-        return 0.5 * sum(np.sum(np.sqrt(sum(d ** 2 for d in self._diffs(v, s)) + self.eps))
+        return 0.5 * sum(np.sum(self.w * np.sqrt(sum(d ** 2 for d in self._diffs(v, s)) + self.eps))
                          for v, s in zip(self._blocks(x), self.scale))
 
     def grad(self, x):
@@ -101,7 +109,10 @@ class TotalVariation(Tikhonov):
             D = np.sqrt(sum(di ** 2 for di in d) + self.eps)
             g = np.zeros_like(v)
             for a in range(3):
-                q = 0.5 * s[a] * d[a] / D  # derivative with respect to v[i + e_a] - v[i]
+                shape = [1, 1, 1]
+                shape[a] = -1
+                sa = np.concatenate([s[a], [0.]]).reshape(shape)  # d[a] is zero at the last node
+                q = 0.5 * self.w * sa * d[a] / D  # derivative with respect to v[i + e_a] - v[i]
                 sl_lo = [slice(None)] * 3
                 sl_hi = [slice(None)] * 3
                 sl_lo[a] = slice(None, -1)
