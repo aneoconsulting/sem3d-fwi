@@ -48,19 +48,22 @@ def kernels(grid, dfwd, dadj, dt, mem=2e8, ranks=None):
 
 def kernels_from_sem(cfg, dadj):
     """dJ/dlambda and dJ/dmu from the kernels accumulated by SEM3D during the adjoint simulation
-    (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points.
+    (strain_mode = 2): kernel.RRRR.bin holds K_lambda then K_mu at the strain points, then, if SEM3D
+    writes them, the forward and adjoint illuminations H_u = int eps(u):eps(u) dt, H_w likewise.
     dict(gl, gm): all points projected on the grid, the PML points on the nearest edge nodes
     (PML copy), except those of the layers with constant properties (cfg.layer_props).
     With PML points (strain_pml), also pml_gl, pml_gm, the part of gl, gm they make up,
     and pml_layer (2, layers): the sums of their kernels by mesh layer of their element, i.e. dJ/dlambda
-    and dJ/dmu of the uniform properties of the PMLs of each layer (PML follow)."""
+    and dJ/dmu of the uniform properties of the PMLs of each layer (PML follow).
+    With the illuminations, also hu and hw on the grid, from the points outside the PMLs."""
     grid = cfg.grid
     gl, gm = np.zeros(grid.shape), np.zeros(grid.shape)
     pl, pm = np.zeros(grid.shape), np.zeros(grid.shape)
+    hu, hw = np.zeros(grid.shape), np.zeros(grid.shape)
     layer = np.zeros((2, len(cfg.layer_list)))
     const = cfg.layer_props is not None and len(cfg.file_layers) < len(cfg.layer_list)
     for rank, coords, weight, npml in sem_io.read_strain_geom(dadj):
-        K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(2, -1)
+        K = np.fromfile(f"{dadj}/strain/kernel.{rank}.bin", dtype="<f8").reshape(-1, len(weight))
         idx, w = model.trilinear(grid, coords)
         if const:  # the points of the layers with constant properties do not depend on the grid
             zf = hexmesh.flat_z(cfg, coords[:, 0], coords[:, 1], coords[:, 2])
@@ -70,14 +73,20 @@ def kernels_from_sem(cfg, dadj):
             g += model.project(grid, weight * k, idx, w)
             if npml:
                 p += model.project(grid, (weight * k)[-npml:], idx[-npml:], w[-npml:])
+        if len(K) == 4:
+            n_in = len(weight) - npml
+            for h, k in ((hu, K[2]), (hw, K[3])):
+                h += model.project(grid, (weight * k)[:n_in], idx[:n_in], w[:n_in])
         if npml:
             # element centre, clipped to the domain: a bottom PML depends on the last layer
             zc = coords[-npml:, 2].reshape(-1, cfg.ngll ** 3).mean(axis=1)
             el = np.array([cfg.layer_of_depth(z) for z in np.clip(zc, -cfg.depth, 0.)])
-            wk = (weight * K)[:, -npml:].reshape(2, -1, cfg.ngll ** 3).sum(axis=2)
+            wk = (weight * K[:2])[:, -npml:].reshape(2, -1, cfg.ngll ** 3).sum(axis=2)
             for c in range(2):
                 np.add.at(layer[c], el, wk[c])
     out = dict(gl=gl, gm=gm)
+    if np.any(hu):
+        out.update(hu=hu, hw=hw)
     if np.any(layer):
         out.update(pml_gl=pl, pml_gm=pm, pml_layer=layer)
     return out

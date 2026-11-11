@@ -10,7 +10,7 @@ then lambda). At each iteration:
 - regularization (Tikhonov, TotalVariation or none), weighted by R = wp ||g_mis|| / ||g_reg||
   (Fathi et al. 2015, section 3.3.1), wp going linearly from wp[0] to wp[1] over the total budget;
 - direction: L-BFGS, scaled by the node scaling of the problem (Problem.scaling) and, optionally,
-  by a preconditioner computed at the start of each stage ("block", "depth");
+  by a preconditioner computed at the start of each stage ("block", "depth", "illum");
 - bias of the lambda direction towards the mu direction over the first `bias` iterations
   (section 3.3.3, eq. 25), both parameters inverted only;
 - line search: Armijo, backtracking by quadratic interpolation, the trials brought back to the bounds
@@ -127,16 +127,24 @@ def regularization(kind, pb, eps=0.01):
     return {"tikhonov": lambda: Tikhonov(pb), "tv": lambda: TotalVariation(pb, eps)}[kind]()
 
 
-def preconditioner(kind, pb, g, d0=None):
+def preconditioner(kind, pb, g, d0=None, illum_eps=0.01):
     """Diagonal scaling of the L-BFGS directions, computed from the first gradient g of a frequency stage.
     "block": the lambda and mu blocks of the scaled gradient get the same norm (the data are much more
     sensitive to mu); "depth": in addition, each block is divided by the horizontal mean of |g| at each
     depth (smoothed over 5 nodes, ratio clipped at 100), the surface data being less sensitive to the
-    deep nodes. d0: scaling applied first (Problem.scaling), returned as is for "none"."""
+    deep nodes; "illum": each node divided by the geometric mean of the forward and adjoint
+    illuminations of the evaluation of g (Problem.illum, H_u = int eps(u):eps(u) dt and H_w; diagonal
+    pseudo-Hessian, Shin et al. 2001; a normalization by the forward and adjoint fields, Kubina et al.
+    2014), plus illum_eps times its maximum on the inverted nodes, instead of d0 (projected like the
+    kernels, the illumination carries the node volume as the gradient does). d0: scaling applied first
+    (Problem.scaling), returned as is for "none". A frozen block (gradient zero) is not normalized."""
     if kind == "none":
         return d0
-    d = np.ones_like(g) if d0 is None else d0.copy()
+    d = np.ones_like(g) if d0 is None or kind == "illum" else d0.copy()
     n, m = pb.n, pb.mask
+    if kind == "illum":
+        H = np.sqrt(pb.illum[0] * pb.illum[1])[m]
+        h = 1. / (H + illum_eps * H.max())
     for i in range(len(g) // n):
         sl = slice(i * n, (i + 1) * n)
         if kind == "depth":
@@ -145,7 +153,11 @@ def preconditioner(kind, pb, g, d0=None):
             prof = np.convolve(prof, np.ones(5) / 5, mode="same")
             w = np.broadcast_to(1. / np.maximum(prof, prof.max() / 100), a.shape)
             d[sl] *= w[m]
-        d[sl] /= np.linalg.norm(d[sl] * g[sl])
+        elif kind == "illum":
+            d[sl] *= h
+        nrm = np.linalg.norm(d[sl] * g[sl])
+        if nrm > 0:
+            d[sl] /= nrm
     return d
 
 

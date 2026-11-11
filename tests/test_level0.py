@@ -369,10 +369,12 @@ def test_run_source_errors(tmp_path, monkeypatch):
     assert not (fwd / "strain").exists() and not (adj / "strain").exists()
 
 
-def test_kernels_in_sem_match_python(tmp_path):
+def test_kernels_in_sem_match_python(tmp_path, monkeypatch):
     """Kernels accumulated by SEM3D during the adjoint simulation (strain_mode 1 and 2) equal those
-    computed in Python from the forward and adjoint strains, to rounding."""
+    computed in Python from the forward and adjoint strains, to rounding; so do the forward and adjoint
+    illuminations, when SEM3D writes them."""
     from semfwi.backend import Job, LocalBackend
+    monkeypatch.setenv("SEMFWI_KEEP_STRAIN", "1")
     out = {}
     for mode in (0, 1):
         cfg = Config(workdir=str(tmp_path / f"m{mode}"), sim_time=0.1, stations=[(262., 233., 0.), (121., 297., 0.)],
@@ -390,6 +392,51 @@ def test_kernels_in_sem_match_python(tmp_path):
     for k in ("gl", "gm"):
         assert np.allclose(out[1][k], out[0][k], rtol=1e-12, atol=1e-12 * np.abs(out[0][k]).max()), k
     assert np.abs(out[1]["gm"]).max() > 0
+    if "hu" not in out[1]:  # SEM3D build without the illuminations
+        return
+
+    def illum(d, adjoint):  # p dt sum eps:eps over the records correlated with the other field, on the grid
+        h = np.zeros(cfg.grid.shape)
+        for coords, weight, e, p in sem_io.read_strain(d):
+            n = e.shape[0]
+            k = np.arange(n - 1)
+            ek = np.asarray(e[n - 2 - k if adjoint else k])
+            H = cfg.dt * p * np.sum(np.sum(ek[..., :3] ** 2, -1) + 2 * np.sum(ek[..., 3:] ** 2, -1), axis=0)
+            idx, w = model.trilinear(cfg.grid, coords)
+            h += model.project(cfg.grid, weight * H, idx, w)
+        return h
+    for k, adjoint in (("hu", False), ("hw", True)):
+        ref = illum(str(tmp_path / "m0" / ("adj" if adjoint else "fwd")), adjoint)
+        assert np.allclose(out[1][k], ref, rtol=1e-10, atol=1e-12 * ref.max()), k
+        assert ref.max() > 0
+
+
+def test_kernels_from_sem_with_illuminations(tmp_path):
+    """kernel.RRRR.bin with the illuminations after the kernels (4 rows) gives the same gl, gm and PML
+    sums as without them (2 rows), plus hu and hw from the points outside the PMLs only."""
+    from semfwi import gradient
+
+    cfg = Config(workdir=str(tmp_path), layers=[(100., 2), (300., 6)])
+    rng = np.random.default_rng(0)
+    npml = cfg.ngll ** 3  # one PML element, after the interior points
+    lo, hi = np.array(cfg.grid.xmin), np.array(cfg.grid.xmin) + np.array(cfg.grid.hs) * (np.array(cfg.grid.n) - 1)
+    coords = rng.uniform(lo, hi, (200 + npml, 3))
+    weight = rng.uniform(1, 2, len(coords))
+    K = rng.standard_normal((4, len(coords)))
+    out = {}
+    for rows in (2, 4):
+        d = tmp_path / f"r{rows}"
+        (d / "strain").mkdir(parents=True)
+        with h5py.File(d / "strain" / "strain_geom.0000.h5", "w") as f:
+            f["coords"], f["weight"] = coords, weight
+            f.attrs["npts"], f.attrs["npts_pml"] = len(coords), npml
+        K[:rows].astype("<f8").tofile(d / "strain" / "kernel.0000.bin")
+        out[rows] = gradient.kernels_from_sem(cfg, str(d))
+    for k in ("gl", "gm", "pml_gl", "pml_gm", "pml_layer"):
+        assert np.array_equal(out[2][k], out[4][k]), k
+    assert "hu" not in out[2]
+    idx, w = model.trilinear(cfg.grid, coords[:-npml])
+    assert np.allclose(out[4]["hu"], model.project(cfg.grid, (weight * K[2])[:-npml], idx, w))
 
 
 def test_node_volume():
@@ -588,6 +635,27 @@ def test_frozen_blocks(tmp_path):
     stage_b, stage_a = xs[1:4], xs[5:]  # xs[0], xs[4]: starting points of the stages
     assert all(np.all(x[:10] == 0) for x in stage_b) and np.all(stage_b[-1][10:] > 0.5)
     assert all(np.all(x[10:] == stage_b[-1][10:]) for x in stage_a) and np.all(stage_a[-1][:10] > 0.5)
+
+
+def test_illum_preconditioner():
+    """"illum" divides each node by sqrt(H_u H_w) + illum_eps * max (not by the node scaling d0), each
+    block then normalized; a frozen block (zero gradient) stays finite."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    shape = (3, 3, 4)
+    mask = np.ones(shape, bool)
+    n = mask.sum()
+    rng = np.random.default_rng(0)
+    hu, hw = rng.uniform(1, 100, shape), rng.uniform(1, 100, shape)
+    pb = SimpleNamespace(n=n, mask=mask, illum=(hu, hw))
+    g = np.concatenate([np.zeros(n), rng.standard_normal(n)])
+    d = inversion.preconditioner("illum", pb, g, d0=rng.uniform(1, 8, 2 * n), illum_eps=0.1)
+    H = np.sqrt(hu * hw)[mask]
+    ratio = d[n:] * (H + 0.1 * H.max())
+    assert np.allclose(ratio, ratio[0]) and np.isclose(np.linalg.norm(d[n:] * g[n:]), 1.)
+    assert np.all(np.isfinite(d))
 
 
 def test_depth_preconditioner_keeps_scaling():

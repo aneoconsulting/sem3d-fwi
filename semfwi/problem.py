@@ -259,6 +259,8 @@ class Problem:
             return J, u, None
         gl = sum(r["gl"] for r in results)
         gm = sum(r["gm"] for r in results)
+        if "hu" in results[0]:  # illuminations of this evaluation, summed over the sources
+            self.illum = (sum(r["hu"] for r in results), sum(r["hw"] for r in results))
         if self.pml == "follow" and "pml_layer" in results[0]:
             # the PML points were projected on the edge nodes (copy): moved to the layer means
             gl = gl - sum(r["pml_gl"] for r in results)
