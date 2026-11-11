@@ -3,7 +3,7 @@
     python run_e2vp1d.py site       # site response: sediments / outcrop, against Thomson-Haskell
     python run_e2vp1d.py gradcheck  # adjoint gradient against finite differences, (K, G)
     python run_e2vp1d.py invert [--iters 20] [--param kg] [--taper R] [--freqs 0.5 1] [--sources dc]
-                                [--normalize]   # the three sedimentary layers
+                                [--normalize] [--stages 0.5:G 1:G 1:K]   # the three sedimentary layers
 
 site: two forward simulations with the double couple only and the exact layered model (constant
 properties per mesh layer), one with the sediments and one with the bedrock up to the surface; the ratio
@@ -14,7 +14,9 @@ the same grid (inverse crime), double couple and surface force, start from homog
 (the properties of L2). invert: one stage of --iters iterations per frequency of --freqs (source time
 functions filtered at that frequency, the mesh made for it); --normalize weights each trace of each
 source by the inverse of its observed energy (floor: a tenth of the median over the stations of that
-source), so that the stations near the surface force, 300 times larger, do not dominate the misfit.
+source), so that the stations near the surface force, 300 times larger, do not dominate the misfit;
+--stages replaces --freqs by stages frequency:parameters, G, K or KG (--param kg), the others frozen
+(successive inversion of G then K, as Kubina et al. 2018 invert mu then lambda).
 Runs in $SEMFWI_RUNS/e2vp1d.
 """
 import argparse
@@ -100,10 +102,17 @@ def gradcheck(args):
 
 
 def invert(args):
-    freqs = args.freqs or [args.fmax]
+    if args.stages:
+        assert args.param == "kg", "--stages: G and K blocks of --param kg"
+        st = [(float(f), p) for f, p in (s.split(":") for s in args.stages)]
+        stages = [(f"f{f:g}_{p}", args.iters, tuple({"K": "a", "G": "b"}[c] for c in p)) for f, p in st]
+        freqs, tag = [f for f, _ in st], "_s" + "-".join(f"{f:g}{p}" for f, p in st)
+    else:
+        freqs = args.freqs or [args.fmax]
+        stages = [(f"f{f:g}", args.iters) for f in freqs]
+        tag = "" if freqs == [1.] else "_f" + "-".join(f"{f:g}" for f in freqs)
     work = (f"{ROOT}/invert_{args.param}" + (f"_taper{args.taper:g}" if args.taper else "")
-            + ("" if len(args.sources) == 2 else "_" + "_".join(args.sources))
-            + ("" if freqs == [1.] else "_f" + "-".join(f"{f:g}" for f in freqs))
+            + ("" if len(args.sources) == 2 else "_" + "_".join(args.sources)) + tag
             + ("" if args.sim_time == 8. else f"_t{args.sim_time:g}") + ("_norm" if args.normalize else ""))
     truth = {}
 
@@ -119,7 +128,7 @@ def invert(args):
         return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"], err_k=e["err_k"],
                     nu_min=float(nu.min()), nu_max=float(nu.max()))
 
-    inversion.invert(work, [(f"f{f:g}", args.iters) for f in freqs], mk, reg="tv", callback=errors,
+    inversion.invert(work, stages, mk, reg="tv", callback=errors,
                      log=lambda s: print(s, flush=True))
 
 
@@ -134,6 +143,7 @@ def main():
     ap.add_argument("--taper", type=float, default=0., help="m, radius of the gradient taper around the sources (invert)")
     ap.add_argument("--freqs", type=float, nargs="+", help="Hz, one stage per frequency (invert), default --fmax")
     ap.add_argument("--sources", nargs="+", choices=("dc", "force"), default=["dc", "force"])
+    ap.add_argument("--stages", nargs="+", help="frequency:parameters (G, K, KG) per stage (invert), instead of --freqs")
     ap.add_argument("--normalize", action="store_true", help="misfit weights: 1 / observed energy per source and station")
     args = ap.parse_args()
     args.sim_time = args.sim_time or (16. if args.what == "site" else 8.)
