@@ -562,6 +562,34 @@ def test_first_stage_failure_next_stage(tmp_path):
     assert len(h2) == len(h) and not any("failed" in s for s in lines)
 
 
+def test_frozen_blocks(tmp_path):
+    """Successive inversion of the blocks: at a stage with blocks ("b",), block a keeps its value to the
+    bit while b moves, then the stage ("a",) moves a and keeps b."""
+    from types import SimpleNamespace
+
+    from semfwi import inversion
+
+    class Quadratic:  # two blocks of 10 unknowns, coupled by the curvature
+        n, active, scaling, nsim = 10, ("a", "b"), None, 0
+        size = 20
+        cfg = SimpleNamespace(workdir=str(tmp_path))
+        c = np.logspace(0, 1, 20)
+
+        def bound(self, x):
+            return x, 0
+
+        def evaluate(self, x, tag):
+            return 0.5 * np.sum(self.c * (x - 1) ** 2), None, self.c * (x - 1)
+
+    xs = []
+    inversion.invert(str(tmp_path / "run"), [("p20", 3, ("b",)), ("p20a", 3, ("a",))],
+                     lambda si, name: Quadratic(), log=lambda s: None,
+                     callback=lambda pb, x: xs.append(x.copy()) or {})
+    stage_b, stage_a = xs[1:4], xs[5:]  # xs[0], xs[4]: starting points of the stages
+    assert all(np.all(x[:10] == 0) for x in stage_b) and np.all(stage_b[-1][10:] > 0.5)
+    assert all(np.all(x[10:] == stage_b[-1][10:]) for x in stage_a) and np.all(stage_a[-1][:10] > 0.5)
+
+
 def test_depth_preconditioner_keeps_scaling():
     """"depth" multiplies the node scaling d0 by a factor per depth: within a horizontal plane,
     d / d0 is constant; "block" keeps d0 up to a factor per block."""

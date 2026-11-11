@@ -2,8 +2,11 @@
 
     invert(work, stages, make_problem, ...)
 
-stages: [(name, iterations)], one Problem per stage from make_problem(stage index, name) (its data,
-its pulse, its run directory); the model x goes from one stage to the next. At each iteration:
+stages: [(name, iterations)] or [(name, iterations, blocks)], one Problem per stage from
+make_problem(stage index, name) (its data, its pulse, its run directory); the model x goes from one
+stage to the next. blocks: the active blocks updated at that stage (all by default), the others frozen
+(their gradient set to zero), for a successive inversion of the parameters (Kubina et al. 2018: mu,
+then lambda). At each iteration:
 - regularization (Tikhonov, TotalVariation or none), weighted by R = wp ||g_mis|| / ||g_reg||
   (Fathi et al. 2015, section 3.3.1), wp going linearly from wp[0] to wp[1] over the total budget;
 - direction: L-BFGS, scaled by the node scaling of the problem (Problem.scaling) and, optionally,
@@ -175,7 +178,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
     step0: maximum relative change of the model at the first step of a stage (no L-BFGS memory);
     callback(pb, x): extra entries of each history line (errors to the true model)."""
     os.makedirs(work, exist_ok=True)
-    total = sum(n for _, n in stages)
+    total = sum(s[1] for s in stages)
     hist_fn, state_fn = f"{work}/history.json", f"{work}/state.npz"
     history = json.load(open(hist_fn)) if os.path.exists(hist_fn) else []
     x, saved = None, {}
@@ -186,7 +189,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
 
     auto = auto_stage and (int(auto_stage[0]), auto_stage[1])
     carry = 0  # iterations left unused by the stages ended early (auto_stage, line-search failure)
-    for si, (pn, niter) in enumerate(stages):
+    for si, (pn, niter, *blocks) in enumerate(stages):
         last = si == len(stages) - 1
         niter += carry
         Js = [h["J"] for h in history if h["stage"] == si]
@@ -202,7 +205,13 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
         R_fn = regularization(reg, pb, eps)
         if x is None:
             x = (x0(pb) if callable(x0) else x0.copy()) if x0 is not None else np.zeros(pb.size)
-        two = len(pb.active) == 2
+        # frozen blocks: gradient set to zero, so L-BFGS (memory, scaling) never moves them
+        free = None
+        if blocks and tuple(blocks[0]) != tuple(pb.active):
+            assert set(blocks[0]) <= set(pb.active), (blocks[0], pb.active)
+            free = np.concatenate([np.full(pb.n, float(p in blocks[0])) for p in pb.active])
+        fr = (lambda v: v) if free is None else (lambda v: v * free)  # noqa: E731
+        two = len(pb.active) == 2 and free is None
         opt = LBFGS(m=m)
 
         def record(it_stage, J, R, alpha, trials, dt, g):
@@ -226,6 +235,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
             log(f"  resuming at iteration {it_global} without re-simulating ({len(opt.s)} L-BFGS pairs)")
         else:
             J, _, gmis = pb.evaluate(x, f"it{it_global:03d}_start")
+            gmis = fr(gmis)
             if done_in_stage == 0:
                 record(0, J, 0., 0., 0, time.time() - t0, gmis)
                 Js.append(J)
@@ -242,7 +252,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
             t0 = time.time()
             it_global += 1
             w = wp[0] + (wp[1] - wp[0]) * min(1., (it_global - 1) / max(1, total - 1))
-            gr = R_fn.grad(x)
+            gr = fr(R_fn.grad(x))
             R = w * np.linalg.norm(gmis) / np.linalg.norm(gr) if np.linalg.norm(gr) > 0 else 0.
             Jt0 = J + R * R_fn.value(x)
             g = gmis + R * gr
@@ -271,6 +281,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                         log(f"  trial {trial}: {moved} nodes brought back to the bounds")
                     try:
                         Jm, _, gmis_t = pb.evaluate(xt, tag)
+                        gmis_t = fr(gmis_t)
                     except (SimulationError, UnphysicalModel) as e:  # step too large; other failures propagate
                         log(f"  trial {trial} alpha={alpha:.3e} failed ({e})")
                         alpha *= 0.5
@@ -300,7 +311,7 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
                 log(f"line search failed at iteration {it_global}"
                     + ("" if last else f": next stage, {carry} iterations carried over"))
                 break
-            opt.update(xt - x, (gmis_t + R * R_fn.grad(xt)) - g)
+            opt.update(xt - x, (gmis_t + R * fr(R_fn.grad(xt))) - g)
             x, J, gmis = xt, Jm, gmis_t
             record(k, J, R, alpha, trial + 1, time.time() - t0, gmis)
             Js.append(J)
