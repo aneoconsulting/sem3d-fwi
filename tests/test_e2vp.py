@@ -37,14 +37,17 @@ def test_sh_transfer():
 
 
 def test_true_model_and_grid():
-    """Sharp model at the nodes of config_1d's grid: L1, L2, L3 then the bedrock, the grid reaching below
-    the sediments; the exact configuration has constant properties everywhere."""
+    """Sharp model at the nodes of config_1d's grid, the 13 GLL depths of the three sedimentary elements:
+    L1, L2, L3 (an interface node in the layer below it), bedrock below the grid; the exact configuration
+    has constant properties everywhere."""
     cfg = e2vp.config_1d("/nonexistent", sources=())
-    assert cfg.grid.xmin[2] <= -e2vp.sediment_bottom() and cfg.grid.xmax[2] == 0. and cfg.file_layers == [0, 1, 2]
-    lam, mu, rho = e2vp.true_model_1d(cfg.grid)
     z = cfg.grid.axis(2)
-    for zz, (vp, vs, r) in ((0., (1500., 200., 2100.)), (-50., (1800., 350., 2100.)),
-                            (-150., (2500., 650., 2200.)), (-207., e2vp.BEDROCK)):
+    edges = -np.cumsum([0.] + [l[0] for l in e2vp.SHARP])
+    assert len(z) == 13 and np.allclose(z[[0, 4, 8, 12]], edges[::-1]) and cfg.file_layers == [0, 1, 2]
+    lam, mu, rho = e2vp.true_model_1d(cfg.grid)
+    assert np.allclose(mu[3, 4, :], mu[0, 0, :])
+    for zz, (vp, vs, r) in ((0., (1500., 200., 2100.)), (-17.3, (1800., 350., 2100.)), (-50., (1800., 350., 2100.)),
+                            (-150., (2500., 650., 2200.)), (-205.4, (2500., 650., 2200.))):
         k = np.argmin(np.abs(z - zz))
         assert np.allclose((lam[3, 4, k], mu[3, 4, k], rho[3, 4, k]), e2vp.lame(vp, vs, r))
     assert e2vp.config_1d("/nonexistent", exact=True, sources=()).file_layers == []

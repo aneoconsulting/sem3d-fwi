@@ -16,7 +16,7 @@ Axes: x east, y north, z up, origin at the epicentre on the free surface.
 """
 import numpy as np
 
-from semfwi import sem_io
+from semfwi import model, sem_io
 from semfwi.config import Config, Grid
 
 # (thickness m, Vp m/s, Vs m/s, rho kg/m3) from the free surface down; then the bedrock (Vp, Vs, rho)
@@ -95,10 +95,11 @@ def config_1d(workdir, fmax=1., half=2000., depth=4000., sim_time=8., exact=Fals
     station_extent m from the epicentre.
     exact: every layer has constant properties (material.input), the true model exactly, no parameter
     grid needed (forward checks). Otherwise the sediments read the model files on a parameter grid of
-    100 m horizontally and 17.3/4 m vertically (inversion), and only the bedrock is constant.
+    100 m horizontally whose z nodes are the 13 GLL depths of the sedimentary elements (inversion), the
+    only depths where SEM3D samples the model, and only the bedrock is constant.
     outcrop: the bedrock up to the surface (the reference of the site response), exact, a single element
     in place of the three sedimentary layers (the bedrock in 17.3 m elements would need dt / 3)."""
-    h = 200. / fmax
+    h, ngll = 200. / fmax, 5
     nbed = int(np.ceil((depth - sediment_bottom()) / 500.))
     layers = [(l[0], 1) for l in SHARP] + [(depth - sediment_bottom(), nbed)]
     rock = lame(*BEDROCK)
@@ -109,9 +110,8 @@ def config_1d(workdir, fmax=1., half=2000., depth=4000., sim_time=8., exact=Fals
         grid = Grid(xmin=(-half, -half, -sediment_bottom()), h=(2 * half, 2 * half, sediment_bottom()), n=(2, 2, 2))
     else:
         props = [None] * len(SHARP) + [rock]
-        hz = SHARP[0][0] / 4
-        nz = int(np.ceil(sediment_bottom() / hz)) + 1
-        grid = Grid(xmin=(-half, -half, -hz * (nz - 1)), h=(100., 100., hz), n=(int(2 * half / 100) + 1,) * 2 + (nz,))
+        z = model.gll_axis(-np.cumsum([0.] + [l[0] for l in SHARP])[::-1], ngll)
+        grid = Grid(xmin=(-half, -half), h=(100., 100.), n=(int(2 * half / 100) + 1,) * 2, z=z)
     xs = np.arange(-station_extent, station_extent + 1e-9, station_step)
     stations = [(x, y, 0.) for x in xs for y in xs]
     srcs = []
@@ -125,7 +125,7 @@ def config_1d(workdir, fmax=1., half=2000., depth=4000., sim_time=8., exact=Fals
     period = 64  # strains every 0.04 s, 12 samples per period at 2 Hz
     nt = int(round(sim_time / dt / period)) * period
     lam0, mu0, rho0 = lame(*SHARP[1][1:])  # reference: L2, homogeneous sediments
-    return Config(workdir=workdir, L=2 * half, x0=-half, depth=depth, h_elem=h, ngll=5, layers=layers,
+    return Config(workdir=workdir, L=2 * half, x0=-half, depth=depth, h_elem=h, ngll=ngll, layers=layers,
                   layer_props=props, npml=2, sim_time=nt * dt, dt=dt, courant=1.0, grid=grid,
                   lam0=lam0, mu0=mu0, rho0=rho0, stations=stations, sources=srcs, nprocs=nprocs, workers=1,
                   strain_period=period, adjoint="points")
