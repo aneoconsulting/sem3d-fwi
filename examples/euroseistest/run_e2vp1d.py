@@ -3,7 +3,8 @@
     python run_e2vp1d.py site       # site response: sediments / outcrop, against Thomson-Haskell
     python run_e2vp1d.py gradcheck  # adjoint gradient against finite differences, (K, G)
     python run_e2vp1d.py invert [--iters 20] [--param kg] [--taper R] [--freqs 0.5 1] [--sources dc]
-                                [--normalize] [--stages 0.5:G 1:G 1:K] [--precond illum]   # the three sedimentary layers
+                                [--normalize] [--stages 0.5:G 1:G 1:K] [--precond illum] [--wp 0.1 0.06]
+                                # the three sedimentary layers
 
 site: two forward simulations with the double couple only and the exact layered model (constant
 properties per mesh layer), one with the sediments and one with the bedrock up to the surface; the ratio
@@ -18,7 +19,9 @@ source), so that the stations near the surface force, 300 times larger, do not d
 --stages replaces --freqs by stages frequency:parameters, G, K or KG (--param kg), the others frozen
 (successive inversion of G then K, as Kubina et al. 2018 invert mu then lambda); --precond illum divides
 the gradient by the forward and adjoint illuminations at the start of each stage (inversion.preconditioner,
-SEM3D writing them with the kernels).
+SEM3D writing them with the kernels); --wp sets the weight of the total variation, R = wp ||g_mis|| /
+||g_reg|| with wp going from the first value to the second over the iterations (inversion.invert, default
+0.5 then 0.3).
 Runs in $SEMFWI_RUNS/e2vp1d.
 """
 import argparse
@@ -116,7 +119,8 @@ def invert(args):
     work = (f"{ROOT}/invert_{args.param}" + (f"_taper{args.taper:g}" if args.taper else "")
             + ("" if len(args.sources) == 2 else "_" + "_".join(args.sources)) + tag
             + ("" if args.sim_time == 8. else f"_t{args.sim_time:g}") + ("_norm" if args.normalize else "")
-            + ("" if args.precond == "none" else f"_{args.precond}"))
+            + ("" if args.precond == "none" else f"_{args.precond}")
+            + ("" if args.wp is None else "_wp" + "-".join(f"{w:g}" for w in args.wp)))
     truth = {}
 
     def mk(si, pn):
@@ -131,8 +135,9 @@ def invert(args):
         return dict(err_lambda=e["err_lambda"], err_mu=e["err_mu"], err_k=e["err_k"],
                     nu_min=float(nu.min()), nu_max=float(nu.max()))
 
+    kw = {} if args.wp is None else dict(wp=tuple(args.wp))
     inversion.invert(work, stages, mk, reg="tv", precond=args.precond, callback=errors,
-                     log=lambda s: print(s, flush=True))
+                     log=lambda s: print(s, flush=True), **kw)
 
 
 def main():
@@ -148,6 +153,7 @@ def main():
     ap.add_argument("--sources", nargs="+", choices=("dc", "force"), default=["dc", "force"])
     ap.add_argument("--stages", nargs="+", help="frequency:parameters (G, K, KG) per stage (invert), instead of --freqs")
     ap.add_argument("--precond", choices=("none", "illum"), default="none", help="preconditioner (invert)")
+    ap.add_argument("--wp", type=float, nargs=2, help="weight of the total variation, start and end (invert)")
     ap.add_argument("--normalize", action="store_true", help="misfit weights: 1 / observed energy per source and station")
     args = ap.parse_args()
     args.sim_time = args.sim_time or (16. if args.what == "site" else 8.)
