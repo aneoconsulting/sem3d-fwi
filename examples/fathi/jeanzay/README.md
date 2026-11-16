@@ -121,6 +121,46 @@ file. A run stopped by the time limit resumes from its last iteration when the s
 again. Logs: `$SEMFWI_RUNS/logs/<tag>.log`. The job deletes old iteration directories as it goes
 (about 200 MB each; the start of each frequency and the last 5 iterations are kept).
 
+## 5. GPU (H100)
+
+SEM3D built with OpenACC, branch `adjoint` at `2221ee68` or later (strain output and kernels on the
+GPU, sources and stations without per-step transfers, a race in the solid PMLs fixed). On the login
+node, about 10 minutes:
+
+```bash
+module purge
+for m in arch/h100 nvidia-compilers/25.11 cuda/12.8.0 openmpi/4.1.8-cuda hdf5/1.14.5-mpi-cuda cmake; do
+  module load $m   # one at a time: on one line, a failed prerequisite unloads them all
+done
+cmake -S $WORK/SEM -B $WORK/build/sem3d-acc -DCMAKE_BUILD_TYPE=Release -DOPT_OPENACC=ON -DOPT_MPI=ON \
+      -DOPT_VEC=32 -DOPT_MIN_GLL_OPT=3 -DCMAKE_Fortran_FLAGS=-gpu=cc90 \
+      -DCMAKE_Fortran_COMPILER=mpif90 -DCMAKE_C_COMPILER=mpicc -DCMAKE_CXX_COMPILER=mpicxx \
+      -DCMAKE_INSTALL_PREFIX=$WORK/install/sem3d-acc
+cmake --build $WORK/build/sem3d-acc -j 6 && cmake --install $WORK/build/sem3d-acc
+```
+
+`OPT_VEC` > 1 is required by the OpenACC kernels (with 1 they do not compile). The Python of the CPU
+nodes is not on the H100 nodes: a venv of its own, from the H100 Python
+(`module purge; module load arch/h100 python/3.11.5; python -m venv $WORK/venvs/semfwi-h100`, then
+`module purge` and `pip install numpy h5py pytest matplotlib`). `env_gpu.sh` loads the modules above
+and this venv. SEM3D puts rank r of a node on its GPU r: a run of n ranks needs n GPUs.
+
+Validation against the CPU build (`export SBATCH_ACCOUNT=<project>@h100`, 2 GPUs, a few minutes):
+
+```bash
+SEM3D_BIN=$WORK/install/sem3d-acc/bin sbatch examples/fathi/jeanzay/gpu_check.slurm <label>
+```
+
+It runs the tests, then one evaluation of case 3 with `scaling.py`, and compares its traces and
+gradient with those of a CPU run of `scaling.py` (default `ngll3_pack_c10_p20_n1_r0`, from section 3).
+Measured (November 2026), one evaluation of case 3 on 1 H100: 34 s (forward 16 s, adjoint 13 s, of
+which about 5 to 8 s of initialization and 3 s of I/O on the CPU per run), 0.0094 GPU-hour; J
+identical to the CPU in all its digits, traces within 3e-15, gradient within 4e-13 (PML kernels
+included). For reference, 472 s on 1 CPU core, about 30 s on 40. Two tests fail on GPU:
+`test_kernels_in_sem_match_python` and `test_worker_compute_matches_local` require two runs to be
+identical to the bit, and the GPU assembly sums with atomics in an order that changes from one run
+to the next (differences of 1e-15).
+
 ## Checked on Jean Zay (November 2026)
 
 - the account is not in the repository: `export SBATCH_ACCOUNT=<project>@cpu` before `sbatch`. Partition `cpu_p1`. CPU QoS: `qos_cpu-dev` (2 h, 10 jobs submitted), `qos_cpu-t3`
@@ -130,3 +170,5 @@ again. Logs: `$SEMFWI_RUNS/logs/<tag>.log`. The job deletes old iteration direct
 - git reaches GitHub over https from the login nodes.
 - `srun --exact` shares a node between concurrent job steps (scaling_pack ran as expected).
 - the CPU nodes have 2 x 20 cores with SMT (80 logical CPUs); the scripts use one rank per physical core.
+- H100: `--constraint=h100`, account `<project>@h100`, QoS `qos_gpu_h100-dev`, `-t3`, `-t4`; 4 H100
+  (80 GB) and 96 cores per node (`gpu_p6`), 24 cores per GPU.
