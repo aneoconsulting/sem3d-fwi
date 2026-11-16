@@ -8,7 +8,8 @@
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
     python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock]   # the first 500 m, from a 1-D start
 
-forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
+forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz, on E2VP_NPROCS
+MPI ranks (environment, default 4). site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
 vertically incident SH transfer function of the epicentre column (the gradient layers in 2 m slices).
 gradcheck and invert: the first 500 m on the parameter grid, data of the true model on the same grid
@@ -156,7 +157,8 @@ def base_tag(args):
 
 def forward(args):
     tag = base_tag(args) + ("_flat" if args.flat else "") + ("_rock" if args.rock else "")
-    cfg, basin = e2vp2.config_3d(f"{ROOT}/forward_{tag}", NPZ, fmax=args.fmax, sim_time=args.time, relief=not args.flat)
+    cfg, basin = e2vp2.config_3d(f"{ROOT}/forward_{tag}", NPZ, fmax=args.fmax, sim_time=args.time, relief=not args.flat,
+                                 nprocs=int(os.environ.get("E2VP_NPROCS", "4")))
     lam, mu, rho = true_model(cfg, basin, rock=args.rock)
     t = time.time()
     u = problem.observed(cfg, Runner(cfg), cfg.workdir, lam, mu, rho, pml="follow")[0]
