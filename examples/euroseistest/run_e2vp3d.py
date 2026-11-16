@@ -4,17 +4,18 @@
     python run_e2vp3d.py forward [--fmax 0.5] [--flat]   # true model, the archive's earthquake
     python run_e2vp3d.py forward --rock           # reference: the sediments replaced by rock
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
-    python run_e2vp3d.py bedrock                  # sediment thickness from H/V and the vertical array (forward --fmax 1 --time 24)
+    python run_e2vp3d.py bedrock --fmax 1 --time 24   # sediment thickness from H/V and the vertical array of that forward
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
-    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24]   # the first 500 m, from a 1-D start
 
-forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz, on E2VP_NPROCS
-MPI ranks (environment, default 4). site: ratio of the
+forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
 vertically incident SH transfer function of the epicentre column (the gradient layers in 2 m slices).
 gradcheck and invert: the first 500 m on the parameter grid, data of the true model on the same grid
 (inverse crime); the start is a 1-D profile that does not use the true model, or with --bedrock sediments
 down to the thickness map of bedrock, estimated from the data (see start_model and bedrock).
+--nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
+files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
 import argparse
 import json
@@ -99,31 +100,32 @@ def sh_downhole(f, v0, g, h, zr, bed, rho=2000., q=30., slab=2.):
 
 
 def bedrock(args):
-    """Sediment thickness map from the observed data alone (forward_f1_t24: the archive's earthquake, 1 Hz,
-    24 s), as a site study would get it, written to bedrock.npz for start_model:
+    """Sediment thickness map from the observed data alone (forward with the same --fmax, --time and --nprocs:
+    the archive's earthquake), as a site study would get it, written to bedrock_<tag>.npz for start_model:
     - at each surface station, the H/V ratio (Konno-Ohmachi smoothed horizontal over vertical spectrum,
-      0.1 to 1 Hz) and its peak f0;
+      0.1 Hz to fmax) and its peak f0;
     - at the epicentre, the profile v0 + g z down to h fitted (grid search, least squares on the log) to the
-      ratios surface / 90 m and surface / 990 m of the vertical array (1-D SH, bedrock = the first crustal
+      ratios surface / 90 m and surface / 990 m of the vertical array (0.15 to 0.9 fmax; 1-D SH, bedrock = the first crustal
       layer; v0 >= 100 m/s): it fixes the S travel time through the sediments tt, not the shape;
     - at each station, tt = c / f0 with c = f0 tt at the epicentre, and the depth where this profile
-      reaches tt; where the H/V peak is below AMP the sediments are too thin for f0 to fall within 1 Hz
+      reaches tt; where the H/V peak is below AMP the sediments are too thin for f0 to fall within fmax
       (thickness H_THIN, assumed).
     The true bedrock only scores the map (printed)."""
     AMP, H_THIN = 5., 50.
-    r = np.load(f"{ROOT}/forward_f1_t24.npz")
+    tag = base_tag(args)
+    r = np.load(f"{ROOT}/forward_{tag}.npz")
     u, st, dt = r["u"], r["stations"], float(r["dt"])
     basin = e2vp2.Basin(NPZ)
     n = 4 * u.shape[1]
     S = np.abs(np.fft.rfft(u, n=n, axis=1))
     fr = np.fft.rfftfreq(n, dt)
     H = np.sqrt((S[..., 0] ** 2 + S[..., 1] ** 2) / 2)
-    fh = fr[(fr > 0.1) & (fr <= 1.)]
+    fh = fr[(fr > 0.1) & (fr <= args.fmax)]
     surf = np.arange(len(st)) < len(st) - 3
     hv = konno_ohmachi(H[surf], fr, fh) / konno_ohmachi(S[surf, :, 2], fr, fh)
     f0, amp = fh[np.argmax(hv, axis=1)], hv.max(axis=1)
     epi = int(np.argmin(np.hypot(st[surf, 0], st[surf, 1])))
-    fb = fr[(fr > 0.15) & (fr < 0.9)][::4]
+    fb = fr[(fr > 0.15) & (fr < 0.9 * args.fmax)][::4]
     s0 = float(basin.mesh_surface(0., 0.))
     Hs = konno_ohmachi(H, fr, fb)
     obs = [(s0 - st[k, 2], np.log(Hs[epi] / Hs[k])) for k in (len(st) - 2, len(st) - 1)]  # 90 and 990 m
@@ -148,17 +150,17 @@ def bedrock(args):
     print(f"against the true bedrock: at the stations |error| median {np.median(np.abs(h_st - true)):.0f} m, "
           f"max {np.abs(h_st - true).max():.0f} m; map every 100 m rms {np.sqrt((err ** 2).mean()):.0f} m "
           f"(true thickness rms {np.sqrt((true ** 2).mean()):.0f} m)")
-    np.savez(f"{ROOT}/bedrock.npz", x=x, y=y, h=hm, v0=v0, g=g, f0=f0, amp=amp, stations=st[surf])
+    np.savez(f"{ROOT}/bedrock_{tag}.npz", x=x, y=y, h=hm, v0=v0, g=g, f0=f0, amp=amp, stations=st[surf])
 
 
 def base_tag(args):
-    return f"f{args.fmax:g}" + (f"_t{args.time:g}" if args.time else "")
+    return f"f{args.fmax:g}" + (f"_t{args.time:g}" if args.time else "") + ("" if args.nprocs == 4 else f"_n{args.nprocs}")
 
 
 def forward(args):
     tag = base_tag(args) + ("_flat" if args.flat else "") + ("_rock" if args.rock else "")
     cfg, basin = e2vp2.config_3d(f"{ROOT}/forward_{tag}", NPZ, fmax=args.fmax, sim_time=args.time, relief=not args.flat,
-                                 nprocs=int(os.environ.get("E2VP_NPROCS", "4")))
+                                 nprocs=args.nprocs)
     lam, mu, rho = true_model(cfg, basin, rock=args.rock)
     t = time.time()
     u = problem.observed(cfg, Runner(cfg), cfg.workdir, lam, mu, rho, pml="follow")[0]
@@ -216,11 +218,13 @@ def site(args):
 
 
 def make_problem(args, work):
-    cfg, basin = e2vp2.config_3d(work, NPZ, fmax=args.fmax, nsources=args.nsources)
-    data, _ = e2vp2.config_3d(f"{ROOT}/data_f{args.fmax:g}_s{args.nsources}", NPZ, fmax=args.fmax, nsources=args.nsources)
+    n = "" if args.nprocs == 4 else f"_n{args.nprocs}"
+    cfg, basin = e2vp2.config_3d(work, NPZ, fmax=args.fmax, nsources=args.nsources, nprocs=args.nprocs)
+    data, _ = e2vp2.config_3d(f"{ROOT}/data_f{args.fmax:g}_s{args.nsources}{n}", NPZ, fmax=args.fmax, nsources=args.nsources,
+                              nprocs=args.nprocs)
     lam_t, mu_t, rho = true_model(cfg, basin)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
-    lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock.npz" if args.bedrock else None)
+    lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz" if args.bedrock else None)
     pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow")
     return pb, (lam_t, mu_t), basin
 
@@ -248,7 +252,8 @@ def gradcheck(args):
 
 
 def invert(args):
-    work = f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}" + ("_bedrock" if args.bedrock else "")
+    work = (f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}" + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
+            + ("" if args.nprocs == 4 else f"_n{args.nprocs}"))
     truth = {}
 
     def mk(si, pn):
@@ -283,7 +288,8 @@ def main():
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
-    ap.add_argument("--bedrock", action="store_true", help="invert, gradcheck: start from bedrock.npz (bedrock command)")
+    ap.add_argument("--bedrock", metavar="TAG", help="invert, gradcheck: start from bedrock_TAG.npz (bedrock command)")
+    ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
     args = ap.parse_args()
     os.makedirs(ROOT, exist_ok=True)
     if args.what == "prepare":
