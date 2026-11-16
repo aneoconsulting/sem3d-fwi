@@ -4,14 +4,16 @@
     python run_e2vp3d.py forward [--fmax 0.5] [--flat]   # true model, the archive's earthquake
     python run_e2vp3d.py forward --rock           # reference: the sediments replaced by rock
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
+    python run_e2vp3d.py bedrock                  # sediment thickness from H/V and the vertical array (forward --fmax 1 --time 24)
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
-    python run_e2vp3d.py invert [--iters 10] [--nsources 3]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock]   # the first 500 m, from a 1-D start
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
 vertically incident SH transfer function of the epicentre column (the gradient layers in 2 m slices).
 gradcheck and invert: the first 500 m on the parameter grid, data of the true model on the same grid
-(inverse crime); the start is a 1-D profile that does not use the true model (see start_model).
+(inverse crime); the start is a 1-D profile that does not use the true model, or with --bedrock sediments
+down to the thickness map of bedrock, estimated from the data (see start_model and bedrock).
 """
 import argparse
 import json
@@ -42,14 +44,110 @@ def true_model(cfg, basin, rock=False):
     return e2vp.lame(vp, vs, rho)
 
 
-def start_model(cfg, basin):
+def start_model(cfg, basin, bedrock=None):
     """1-D start: in the first 500 m below the meshed surface, Vs from 250 m/s at the surface to 1200 m/s
     at 500 m, Vp = 1600 m/s + 1.5 Vs, the density of the true model (not inverted); a generic sediment
-    profile, the same everywhere (neither the basin's thickness nor its gradients)."""
+    profile, the same everywhere (neither the basin's thickness nor its gradients).
+    bedrock (npz of the bedrock command): sediments of Vs = v0 + g depth down to its thickness map, Vp =
+    1600 m/s + 1.5 Vs, then the first crustal layer (the one meshed below the parameter grid)."""
     X, Y, Z = cfg.grid.mesh()
     depth = np.clip(basin.mesh_surface(X, Y) - Z, 0., 500.)
-    vs = 250. + (1200. - 250.) * depth / 500.
-    return e2vp.lame(1600. + 1.5 * vs, vs, basin.properties(X, Y, Z)[2])
+    rho = basin.properties(X, Y, Z)[2]
+    if bedrock is None:
+        vs = 250. + (1200. - 250.) * depth / 500.
+        return e2vp.lame(1600. + 1.5 * vs, vs, rho)
+    b = np.load(bedrock)
+    sed = depth < regular_bilinear(b["x"], b["y"], b["h"], X, Y)
+    vs = b["v0"] + b["g"] * depth
+    rock = basin.layers[2]
+    return e2vp.lame(np.where(sed, 1600. + 1.5 * vs, rock["vp"][0]), np.where(sed, vs, rock["vs"][0]), rho)
+
+
+def regular_bilinear(x, y, a, X, Y):
+    """a[iy, ix] given on the regular axes x, y, at (X, Y), clamped to the edges."""
+    fx = np.clip((X - x[0]) / (x[1] - x[0]), 0, len(x) - 1 - 1e-9)
+    fy = np.clip((Y - y[0]) / (y[1] - y[0]), 0, len(y) - 1 - 1e-9)
+    i, j = fx.astype(int), fy.astype(int)
+    u, v = fx - i, fy - j
+    return (1 - u) * (1 - v) * a[j, i] + u * (1 - v) * a[j, i + 1] + (1 - u) * v * a[j + 1, i] + u * v * a[j + 1, i + 1]
+
+
+def konno_ohmachi(spec, fr, fc, b=40.):
+    """spec (..., len(fr)) smoothed at the frequencies fc (Konno and Ohmachi 1998, bandwidth b)."""
+    x = b * np.log10(fr[None, 1:] / fc[:, None])
+    w = (np.sin(x) / np.where(x == 0, 1., x)) ** 4
+    w[x == 0] = 1.
+    return spec[..., 1:] @ w.T / w.sum(axis=1)
+
+
+def sh_downhole(f, v0, g, h, zr, bed, rho=2000., q=30., slab=2.):
+    """|surface / depth zr| of vertically incident SH waves (propagator of the stress-free surface down to
+    zr) in sediments of Vs = v0 + g z and density rho down to h, then the bedrock bed = (vs, rho); a
+    quality factor q in every layer keeps the ratio finite at its peaks."""
+    w = 2 * np.pi * np.asarray(f)
+    p11, p21 = np.ones_like(w, complex), np.zeros_like(w, complex)
+    z = 0.
+    while z < zr - 1e-9:
+        d = min(slab, zr - z)
+        vs, r = (v0 + g * (z + d / 2), rho) if z + d / 2 < h else bed
+        c = vs * (1 + 0.5j / q)
+        k, mu = w / c, r * c ** 2
+        p11, p21 = np.cos(k * d) * p11 + np.sin(k * d) / (mu * k) * p21, -mu * k * np.sin(k * d) * p11 + np.cos(k * d) * p21
+        z += d
+    return 1. / np.abs(p11)
+
+
+def bedrock(args):
+    """Sediment thickness map from the observed data alone (forward_f1_t24: the archive's earthquake, 1 Hz,
+    24 s), as a site study would get it, written to bedrock.npz for start_model:
+    - at each surface station, the H/V ratio (Konno-Ohmachi smoothed horizontal over vertical spectrum,
+      0.1 to 1 Hz) and its peak f0;
+    - at the epicentre, the profile v0 + g z down to h fitted (grid search, least squares on the log) to the
+      ratios surface / 90 m and surface / 990 m of the vertical array (1-D SH, bedrock = the first crustal
+      layer; v0 >= 100 m/s): it fixes the S travel time through the sediments tt, not the shape;
+    - at each station, tt = c / f0 with c = f0 tt at the epicentre, and the depth where this profile
+      reaches tt; where the H/V peak is below AMP the sediments are too thin for f0 to fall within 1 Hz
+      (thickness H_THIN, assumed).
+    The true bedrock only scores the map (printed)."""
+    AMP, H_THIN = 5., 50.
+    r = np.load(f"{ROOT}/forward_f1_t24.npz")
+    u, st, dt = r["u"], r["stations"], float(r["dt"])
+    basin = e2vp2.Basin(NPZ)
+    n = 4 * u.shape[1]
+    S = np.abs(np.fft.rfft(u, n=n, axis=1))
+    fr = np.fft.rfftfreq(n, dt)
+    H = np.sqrt((S[..., 0] ** 2 + S[..., 1] ** 2) / 2)
+    fh = fr[(fr > 0.1) & (fr <= 1.)]
+    surf = np.arange(len(st)) < len(st) - 3
+    hv = konno_ohmachi(H[surf], fr, fh) / konno_ohmachi(S[surf, :, 2], fr, fh)
+    f0, amp = fh[np.argmax(hv, axis=1)], hv.max(axis=1)
+    epi = int(np.argmin(np.hypot(st[surf, 0], st[surf, 1])))
+    fb = fr[(fr > 0.15) & (fr < 0.9)][::4]
+    s0 = float(basin.mesh_surface(0., 0.))
+    Hs = konno_ohmachi(H, fr, fb)
+    obs = [(s0 - st[k, 2], np.log(Hs[epi] / Hs[k])) for k in (len(st) - 2, len(st) - 1)]  # 90 and 990 m
+    bed = (basin.layers[2]["vs"][0], basin.layers[2]["rho"][0])
+    fits = [(sum(((np.log(sh_downhole(fb, v0, g, h, zr, bed)) - o) ** 2).sum() for zr, o in obs), v0, g, h)
+            for v0 in np.arange(100., 401., 20.) for g in np.arange(0., 8.01, 0.25) for h in np.arange(60., 501., 10.)
+            if v0 + g * h < bed[0]]
+    m, v0, g, he = min(fits)
+    tt = (lambda h: np.log1p(g * h / v0) / g) if g else (lambda h: h / v0)
+    c = f0[epi] * tt(he)
+    h_st = np.where(amp > AMP, v0 * np.expm1(g * c / f0) / g if g else v0 * c / f0, H_THIN)
+    x, y = np.unique(st[surf, 0]), np.unique(st[surf, 1])
+    hm = np.full((len(y), len(x)), np.nan)
+    hm[np.searchsorted(y, st[surf, 1]), np.searchsorted(x, st[surf, 0])] = h_st
+    assert not np.isnan(hm).any(), "surface stations not on a regular grid"
+    true = basin._bilinear(basin.surface, st[surf, 0], st[surf, 1]) - basin._bilinear(basin.bedrock, st[surf, 0], st[surf, 1])
+    a = np.arange(x[0], x[-1] + 1e-9, 100.)
+    A, B = np.meshgrid(a, a)
+    err = regular_bilinear(x, y, hm, A, B) - (basin._bilinear(basin.surface, A, B) - basin._bilinear(basin.bedrock, A, B))
+    print(f"profile at the epicentre: v0 {v0:.0f} m/s, g {g:.2f} /s, bedrock at {he:.0f} m (misfit {m:.2f}), "
+          f"tt {tt(he):.3f} s; c = f0 tt = {c:.3f}; {(amp > AMP).sum()} of {surf.sum()} stations with an H/V peak above {AMP:g}")
+    print(f"against the true bedrock: at the stations |error| median {np.median(np.abs(h_st - true)):.0f} m, "
+          f"max {np.abs(h_st - true).max():.0f} m; map every 100 m rms {np.sqrt((err ** 2).mean()):.0f} m "
+          f"(true thickness rms {np.sqrt((true ** 2).mean()):.0f} m)")
+    np.savez(f"{ROOT}/bedrock.npz", x=x, y=y, h=hm, v0=v0, g=g, f0=f0, amp=amp, stations=st[surf])
 
 
 def base_tag(args):
@@ -120,7 +218,7 @@ def make_problem(args, work):
     data, _ = e2vp2.config_3d(f"{ROOT}/data_f{args.fmax:g}_s{args.nsources}", NPZ, fmax=args.fmax, nsources=args.nsources)
     lam_t, mu_t, rho = true_model(cfg, basin)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
-    lam0, mu0, _ = start_model(cfg, basin)
+    lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock.npz" if args.bedrock else None)
     pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow")
     return pb, (lam_t, mu_t), basin
 
@@ -148,7 +246,7 @@ def gradcheck(args):
 
 
 def invert(args):
-    work = f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}"
+    work = f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}" + ("_bedrock" if args.bedrock else "")
     truth = {}
 
     def mk(si, pn):
@@ -174,7 +272,7 @@ def invert(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=("prepare", "forward", "site", "gradcheck", "invert"))
+    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert"))
     ap.add_argument("--fmax", type=float, default=0.5)
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
@@ -183,12 +281,13 @@ def main():
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
+    ap.add_argument("--bedrock", action="store_true", help="invert, gradcheck: start from bedrock.npz (bedrock command)")
     args = ap.parse_args()
     os.makedirs(ROOT, exist_ok=True)
     if args.what == "prepare":
         e2vp2.prepare(NPZ)
     else:
-        {"forward": forward, "site": site, "gradcheck": gradcheck, "invert": invert}[args.what](args)
+        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert}[args.what](args)
 
 
 if __name__ == "__main__":
