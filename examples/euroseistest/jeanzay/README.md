@@ -17,7 +17,8 @@ cd examples/euroseistest && python run_e2vp3d.py prepare   # basin.npz
 ## SEM3D for ngll = 5
 
 The case uses ngll = 5; the default binary of the Fathi page is built for ngll = 3 (`-DOPT_MIN_GLL_OPT=3`).
-Same source (branch `adjoint`, commit `e3c8898a` or later) and options, without that one:
+Same source (branch `adjoint`, commit `32daa083` or later: the source element no longer depends on the MPI
+partition) and options, without that one:
 
 ```bash
 cmake -S $WORK/SEM -B $WORK/build/sem3d-adjoint-ngll5 -DCMAKE_BUILD_TYPE=Release -DOPT_VEC=8 \
@@ -40,4 +41,7 @@ sacct -j <job> --format=JobID,Elapsed,MaxRSS,NNodes   # wall time and memory of 
 The archive's earthquake, 24 s, at 2 Hz: elements of 62.5 m, about 8 times the 3.2 M GLL points at 1 Hz and twice
 its time steps, so about 16 times its cost (1 Hz on 4 Graviton cores: 7857 s, 8.7 core-h). The three jobs give the
 strong scaling; the traces of any of them feed the bedrock map: `run_e2vp3d.py bedrock --fmax 2 --time 24 --nprocs
-<ranks>`. Ranks change the partition of the mesh: traces of 2 and 4 ranks differ by 5e-4 of their maximum (0.5 Hz, 2 s).
+<ranks>`. The sources lie on faces or edges of elements (the epicentre on a layer interface); from `32daa083` on,
+SEM3D picks the same element for any number of ranks (traces of 1 to 4 ranks within 1e-14), before it the
+traces depended on the partition (8e-6 of their maximum between 1 and 2 ranks at 0.5 Hz).
+`sacct`'s MaxRSS does not measure SEM3D: put `/usr/bin/time -v` before `srun`, or use `sstat` during the run.
