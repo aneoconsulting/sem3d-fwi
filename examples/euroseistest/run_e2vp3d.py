@@ -3,6 +3,7 @@
     python run_e2vp3d.py prepare                  # crop the archive's grids into $SEMFWI_RUNS/e2vp3d/basin.npz
     python run_e2vp3d.py forward [--fmax 0.5] [--flat]   # true model, the archive's earthquake
     python run_e2vp3d.py forward --rock           # reference: the sediments replaced by rock
+    python run_e2vp3d.py forward --pml copy --npml 4   # PMLs extending the model files, or thicker (_pmlcopy, _npml4)
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
     python run_e2vp3d.py bedrock --fmax 1 --time 24   # sediment thickness from H/V and the vertical array of that forward
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
@@ -162,12 +163,13 @@ def base_tag(args):
 
 
 def forward(args):
-    tag = base_tag(args) + ("_flat" if args.flat else "") + ("_rock" if args.rock else "")
+    tag = (base_tag(args) + ("_flat" if args.flat else "") + ("_rock" if args.rock else "")
+           + ("" if args.pml == "follow" else f"_pml{args.pml}") + ("" if args.npml == 2 else f"_npml{args.npml}"))
     cfg, basin = e2vp2.config_3d(f"{ROOT}/forward_{tag}", NPZ, fmax=args.fmax, sim_time=args.time, relief=not args.flat,
-                                 nprocs=args.nprocs)
+                                 nprocs=args.nprocs, npml=args.npml)
     lam, mu, rho = true_model(cfg, basin, rock=args.rock)
     t = time.time()
-    u = problem.observed(cfg, Runner(cfg), cfg.workdir, lam, mu, rho, pml="follow")[0]
+    u = problem.observed(cfg, Runner(cfg), cfg.workdir, lam, mu, rho, pml=args.pml)[0]
     el = time.time() - t
     print(f"{tag}: {el:.0f} s, dt {cfg.dt:.3e}, {cfg.nt} steps, max |u| {np.abs(u).max():.3e}, finite {np.isfinite(u).all()}")
     np.savez(f"{ROOT}/forward_{tag}.npz", u=u, stations=np.array(cfg.stations), dt=cfg.dt, elapsed=el)
@@ -294,6 +296,9 @@ def main():
     ap.add_argument("--nsources", type=int, default=3)
     ap.add_argument("--bedrock", metavar="TAG", help="invert, gradcheck: start from bedrock_TAG.npz (bedrock command)")
     ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
+    ap.add_argument("--pml", choices=("follow", "copy"), default="follow",
+                    help="forward: PMLs of the sediment layers, mean of their layer or extension of the model files")
+    ap.add_argument("--npml", type=int, default=2, help="forward: layers of PML elements")
     args = ap.parse_args()
     os.makedirs(ROOT, exist_ok=True)
     if args.what == "prepare":

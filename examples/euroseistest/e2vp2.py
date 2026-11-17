@@ -137,7 +137,7 @@ EXTRA_SOURCES = [(-1500., 1200., -3000., 200.), (1600., -1000., -2500., 320.), (
 
 
 def config_3d(workdir, npz, fmax=0.5, half=3000., depth=6000., sim_time=None, station_step=500.,
-              nsources=1, nprocs=4, grid_h=None, relief=True):
+              nsources=1, nprocs=4, grid_h=None, relief=True, npml=2):
     """Box of 2 half around the epicentre, from the meshed surface down to the elevation z0 - depth.
     Elements of h = 125 m / fmax horizontally (about one S wavelength at the surface, at the slowest Vs of the sediments);
     vertically max(4, 500 m / h) elements of h over the sediments (the model files, at least 500 m below the flat
@@ -190,7 +190,7 @@ def config_3d(workdir, npz, fmax=0.5, half=3000., depth=6000., sim_time=None, st
     xs = np.arange(-half + station_step, half - station_step + 1e-9, station_step)
     pts = [(a, b, 0.) for a in xs for b in xs] + [(0., 0., -d) for d in (10., 100., 1000.)]
     cfg = Config(workdir=workdir, L=2 * half, x0=-half, depth=depth, h_elem=h, ngll=5, layers=layers,
-                 layer_props=props, npml=2, sim_time=nt * dt, dt=dt, courant=1.0, grid=grid,
+                 layer_props=props, npml=npml, sim_time=nt * dt, dt=dt, courant=1.0, grid=grid,
                  stations=[], sources=srcs, nprocs=nprocs, workers=1, strain_period=period,
                  adjoint="points", mesh_hex8=True, topography=topo if relief else None, topo_depth=1500.)
     cfg.stations = hexmesh.on_surface(cfg, pts)
