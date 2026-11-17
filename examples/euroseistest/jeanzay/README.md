@@ -45,3 +45,20 @@ strong scaling; the traces of any of them feed the bedrock map: `run_e2vp3d.py b
 SEM3D picks the same element for any number of ranks (traces of 1 to 4 ranks within 1e-14), before it the
 traces depended on the partition (8e-6 of their maximum between 1 and 2 ranks at 0.5 Hz).
 `sacct`'s MaxRSS does not measure SEM3D: put `/usr/bin/time -v` before `srun`, or use `sstat` during the run.
+
+## Gradient checks and inversions
+
+`invert.slurm` runs `run_e2vp3d.py gradcheck`, `psf` or `invert` with every simulation on all the allocated cores, the
+sources one after the other; its arguments are those of `run_e2vp3d.py`, `--nprocs` set to the number of tasks. The
+start with the bedrock map needs `bedrock_<tag>.npz` in `$SEMFWI_RUNS/e2vp3d` (`run_e2vp3d.py bedrock`, from a forward
+of the same `--fmax`, `--time` and `--nprocs`):
+
+```bash
+sbatch --nodes=1 examples/euroseistest/jeanzay/forward.slurm 1               # forward_f1_t24_n40.npz
+python run_e2vp3d.py bedrock --fmax 1 --time 24 --nprocs 40                   # bedrock_f1_t24_n40.npz
+sbatch --nodes=2 --qos=qos_cpu-dev --time=02:00:00 examples/euroseistest/jeanzay/invert.slurm gradcheck --fmax 1 --bedrock f1_t24_n40
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --bedrock f1_t24_n40
+```
+
+An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
+and the same number of tasks (the ranks are part of the names of its data and work directories).
