@@ -13,7 +13,8 @@ mean horizontal amplitude spectra of the basin to those of the rock reference at
 vertically incident SH transfer function of the epicentre column (the gradient layers in 2 m slices).
 gradcheck and invert: the first 500 m on the parameter grid, data of the true model on the same grid
 (inverse crime); the start is a 1-D profile that does not use the true model, or with --bedrock sediments
-down to the thickness map of bedrock, estimated from the data (see start_model and bedrock).
+down to the thickness map of bedrock, estimated from the data (see start_model and bedrock). The descent
+directions vary linearly in z between every ZSTEP-th level of the grid (_z4 in the work directory).
 --nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
 files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
@@ -32,6 +33,9 @@ from semfwi import inversion, problem  # noqa: E402
 from semfwi.config import RUNS_DIR  # noqa: E402
 from semfwi.runner import Runner  # noqa: E402
 
+# directions on every ZSTEP-th level of the grid (h / 10 vertically): h / 2.5, its horizontal step, wider than the
+# largest gap between GLL planes (0.33 h), so that no level is left without gradient (Problem zstep)
+ZSTEP = 4
 ROOT = os.path.join(RUNS_DIR, "e2vp3d")
 NPZ = os.path.join(ROOT, "basin.npz")
 
@@ -225,7 +229,7 @@ def make_problem(args, work):
     lam_t, mu_t, rho = true_model(cfg, basin)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
     lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz" if args.bedrock else None)
-    pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow")
+    pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow", zstep=ZSTEP)
     return pb, (lam_t, mu_t), basin
 
 
@@ -252,7 +256,7 @@ def gradcheck(args):
 
 
 def invert(args):
-    work = (f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}" + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
+    work = (f"{ROOT}/invert_f{args.fmax:g}_s{args.nsources}_{args.param}_z{ZSTEP}" + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
             + ("" if args.nprocs == 4 else f"_n{args.nprocs}"))
     truth = {}
 
