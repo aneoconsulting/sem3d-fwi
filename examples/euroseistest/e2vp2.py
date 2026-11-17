@@ -140,9 +140,10 @@ def config_3d(workdir, npz, fmax=0.5, half=3000., depth=6000., sim_time=None, st
               nsources=1, nprocs=4, grid_h=None, relief=True):
     """Box of 2 half around the epicentre, from the meshed surface down to the elevation z0 - depth.
     Elements of h = 125 m / fmax horizontally (about one S wavelength at the surface, at the slowest Vs of the sediments);
-    vertically 4 elements of h over the sediments (500 m below the flat surface, the model files), then
-    constant crustal layers (the first two down to their bottoms in velocity_profile.txt, the third to the bottom of the box) in elements of about 4 h. The model files cover the
-    first 500 m on a grid of grid_h (default h / 2.5) horizontally and h / 10 vertically, up to the highest
+    vertically max(4, 500 m / h) elements of h over the sediments (the model files, at least 500 m below the flat
+    surface, deeper than the basin), then constant crustal layers (the first two down to their bottoms in
+    velocity_profile.txt, the third to the bottom of the box) in elements of about 4 h. The model files cover
+    these sediment elements on a grid of grid_h (default h / 2.5) horizontally and h / 10 vertically, up to the highest
     point of the meshed surface. dt for a Courant number of 0.5 at the largest Vp of each layer.
     relief=False: flat free surface at z = 0 (same sediments below it).
     nsources: the archive's earthquake, then nsources - 1 of EXTRA_SOURCES.
@@ -155,7 +156,7 @@ def config_3d(workdir, npz, fmax=0.5, half=3000., depth=6000., sim_time=None, st
     os.makedirs(workdir, exist_ok=True)
     basin.write_topography(topo)
     h = 125. / fmax
-    n_top = 4
+    n_top = max(4, int(np.ceil(500. / h)))  # 4 h below 1 Hz, 500 m above
     sed = n_top * h
     crust = [l for l in basin.layers[2:]]
     zb = [float(l["bottom"].split()[1]) - basin.z0 for l in crust[:2]] + [-depth]  # bottoms (flat mesh z)
