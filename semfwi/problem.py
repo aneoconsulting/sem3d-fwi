@@ -46,7 +46,11 @@ from .backend import Job, LocalBackend
 def write_model(d, cfg, lam, mu, rho, pml):
     """Model files of a run directory, the PMLs as for Problem(pml=...)."""
     model.write_model(d, cfg.grid, lam, mu, rho, nmat=len(cfg.layer_list), file_layers=cfg.file_layers)
-    if pml == "copy":
+    if pml == "copy" and cfg.layer_props is not None:
+        # the PMLs of the layers of constant properties keep them (follow), the others extend the files
+        model.write_pml_materials(d, cfg, lam, mu, rho)
+        model.write_pml_copy(d, cfg.file_layers)
+    elif pml == "copy":
         model.write_pml_copy(d)
     elif pml == "follow":
         model.write_pml_materials(d, cfg, lam, mu, rho)

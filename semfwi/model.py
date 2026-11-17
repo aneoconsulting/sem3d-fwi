@@ -52,15 +52,20 @@ def write_model(d, grid, lam, mu, rho, nmat=1, file_layers=None):
         f.write("".join(MATERIAL_SPEC.format(num=k) for k in (range(nmat) if file_layers is None else file_layers)))
 
 
-def write_pml_copy(d):
+def write_pml_copy(d, layers=None):
     """Appends to material.spec, written by write_model, a copy of material 0 for each PML material
-    of material.input: the PMLs then extend the current model, as in Fathi et al. Without
+    of material.input: the PMLs then extend the current model, as in Fathi et al. layers: only the PMLs
+    of these mesh layers (those that read the model files), the others keep material.input. Without
     material.input (no mesh in d, as in the unit tests), there is nothing to extend."""
     if not os.path.exists(f"{d}/material.input"):
         return
     lines = open(f"{d}/material.input").read().splitlines()
     nmat = int(lines[0])
     pml = [i - 1 for i in range(1, nmat + 1) if lines[i].startswith("P")]
+    if layers is not None:
+        ipml = lines.index("# PML properties")
+        parents = [int(l.split()[-1]) for l in lines[ipml + 2:] if l.strip()]
+        pml = [k for k, p in zip(pml, parents) if p in layers]
     with open(f"{d}/material.spec", "a") as f:
         f.write("".join(PML_COPY_SPEC.format(num=k) for k in pml))
 
