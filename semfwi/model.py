@@ -184,6 +184,27 @@ def project(grid, values, idx, w):
     return out.reshape(grid.shape)
 
 
+def vertical_basis(grid, mask, k):
+    """Coarse vertical basis of the nodes of mask: unknowns on every k-th z level of the grid (from the
+    bottom, plus the top level), values on the other levels by linear interpolation in z on the same
+    column. Returns (idx, w, nc): masked node j = w[j, 0] c[idx[j, 0]] + w[j, 1] c[idx[j, 1]] for the nc
+    coarse unknowns c (those that reach a node of mask). With model files finer than the spacing of the
+    GLL nodes, the gradient of the levels between two GLL planes is zero (projection of the kernels,
+    trilinear): these levels never move, and the levels next to the GLL planes take the whole update."""
+    nz = grid.shape[2]
+    z = grid.axis(2)
+    levels = np.unique(np.append(np.arange(0, nz, k), nz - 1))
+    I, J, K = np.nonzero(mask)
+    c0 = np.searchsorted(levels, K, side="right") - 1
+    c1 = np.minimum(c0 + 1, len(levels) - 1)
+    lo, hi = levels[c0], levels[c1]
+    w1 = np.where(hi > lo, (z[K] - z[lo]) / np.where(hi > lo, z[hi] - z[lo], 1.), 0.)
+    keys = np.stack([np.ravel_multi_index((I, J, c), (grid.shape[0], grid.shape[1], len(levels))) for c in (c0, c1)], 1)
+    keys[:, 1] = np.where(w1 > 0, keys[:, 1], keys[:, 0])  # a node on a coarse level has a single unknown
+    uniq, inv = np.unique(keys, return_inverse=True)
+    return inv.reshape(keys.shape), np.stack([1 - w1, w1], 1), len(uniq)
+
+
 def interior_mask(grid, L, depth, x0=0., surface=None):
     """Nodes whose trilinear support (clipped to the grid) lies entirely in the physical domain
     [x0, x0 + L]^2 x [-depth, 0], outside the PMLs: only these are inverted, since the gradient

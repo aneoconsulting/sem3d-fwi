@@ -10,7 +10,8 @@ then lambda). At each iteration:
 - regularization (Tikhonov, TotalVariation or none), weighted by R = wp ||g_mis|| / ||g_reg||
   (Fathi et al. 2015, section 3.3.1), wp going linearly from wp[0] to wp[1] over the total budget;
 - direction: L-BFGS, scaled by the node scaling of the problem (Problem.scaling) and, optionally,
-  by a preconditioner computed at the start of each stage ("block", "depth", "illum");
+  by a preconditioner computed at the start of each stage ("block", "depth", "illum"), in the span of the
+  coarse vertical basis of the problem if it has one (precond_operator);
 - bias of the lambda direction towards the mu direction over the first `bias` iterations
   (section 3.3.3, eq. 25), both parameters inverted only;
 - line search: Armijo, backtracking by quadratic interpolation, the trials brought back to the bounds
@@ -172,6 +173,25 @@ def preconditioner(kind, pb, g, d0=None, illum_eps=0.01):
     return d
 
 
+def precond_operator(pb, d):
+    """Preconditioner of the L-BFGS directions from the diagonal scaling d (None: identity), in the span of
+    the coarse vertical basis of pb when it has one (Problem zstep): v -> S P P^T S v, S = sqrt(d)."""
+    if pb.basis is None:
+        return None if d is None else (lambda v: d * v)
+    idx, w, nc = pb.basis
+    s = None if d is None else np.sqrt(d)
+
+    def apply(v):
+        v = v if s is None else s * v
+        out = np.empty_like(v)
+        for i in range(len(v) // pb.n):
+            b = v[i * pb.n:(i + 1) * pb.n]
+            c = np.bincount(idx.ravel(), (w * b[:, None]).ravel(), minlength=nc)  # P^T
+            out[i * pb.n:(i + 1) * pb.n] = np.sum(w * c[idx], axis=1)          # P
+        return out if s is None else s * out
+    return apply
+
+
 def stalled(J, w, tol):
     """True when the best of the last w values of J is not tol (relative) below the best before them."""
     return len(J) > 2 * w and min(J[-w:]) > (1 - tol) * min(J[:-w])
@@ -269,8 +289,9 @@ def invert(work, stages, make_problem, x0=None, reg=None, eps=0.01, wp=(0.5, 0.3
         if precond != "none" and not os.path.exists(d_fn):
             np.save(d_fn, preconditioner(precond, pb, gmis, pb.scaling))
         d = np.load(d_fn) if precond != "none" else pb.scaling
-        if d is not None:
-            opt.precond = lambda v: d * v
+        M = precond_operator(pb, d)
+        if M is not None:
+            opt.precond = M
         for k in range(done_in_stage + 1, niter + 1):
             t0 = time.time()
             it_global += 1

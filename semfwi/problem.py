@@ -13,6 +13,12 @@ follows from the chain rule:
   dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda),
   dJ/dK = dJ/dlambda,              dJ/dG = dJ/dmu - 2/3 dJ/dlambda.
 
+zstep: the descent directions of each block in the span of a coarse vertical basis P (model.vertical_basis,
+unknowns every zstep levels of the grid, linear in z between them), by the L-BFGS preconditioner S P P^T S
+(S the square root of the diagonal scaling; inversion.precond_operator): L-BFGS on the coarse unknowns,
+from a start in that span, up to the bounds and the size of the first step. For model files finer than the
+GLL spacing, whose levels between two GLL planes get no gradient.
+
 pml: "follow" (default: each PML takes the mean of its mesh layer, so a perturbation anywhere in a
 layer changes its PMLs; the gradient includes this dependence, from the PML kernels), "copy" (SEM3D extends the current model
 into the PMLs point by point, from the inner edge of each PML, as in Fathi et al.; the gradient
@@ -89,7 +95,7 @@ def poisson(lam, mu):
 
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
-                 fixed=None, pml="follow", backend=None):
+                 fixed=None, pml="follow", backend=None, zstep=1):
         assert param in ("lame", "vel", "kg"), param
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
@@ -114,6 +120,7 @@ class Problem:
         # the GLL nodes, which a topography moves
         d = None if cfg.topography else model.node_scaling(cfg.grid, cfg.h_elem, (cfg.x0, cfg.x0, -cfg.depth), self.mask)
         self.scaling = None if d is None else np.tile(d, len(self.active))
+        self.basis = model.vertical_basis(cfg.grid, self.mask, zstep) if zstep > 1 else None
         self.nsim = 0
 
     @property

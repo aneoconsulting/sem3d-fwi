@@ -108,6 +108,26 @@ def test_interior_mask():
     assert X[m].min() == 25. and X[m].max() == 375. and Z[m].min() == -375. and Z[m].max() == 0.
 
 
+def test_vertical_basis():
+    """Exact on fields linear in z between the coarse levels, top level included; P^T is its transpose."""
+    grid = Grid(xmin=(0., 0., -100.), h=(10., 10., 5.), n=(4, 3, 22))
+    mask = np.ones(grid.shape, bool)
+    mask[0, 0, -3:] = False  # a column cut by the surface
+    idx, w, nc = model.vertical_basis(grid, mask, 4)
+    Z = grid.mesh()[2][mask]
+    I, J, K = np.nonzero(mask)
+    assert np.allclose(w.sum(axis=1), 1.) and np.all(w >= 0)
+    # coarse levels 0, 4, ..., 20 and 21; the cut column (top node at level 18) stops at level 20
+    assert nc == 11 * 7 + 6
+    c = np.zeros(nc)
+    on = (K % 4 == 0) | (K == 21)
+    c[idx[on, 0]] = 3. * Z[on] + I[on]  # a field linear in z on each column
+    assert np.allclose(np.sum(w * c[idx], axis=1), 3. * Z + I)
+    v, u = RNG.standard_normal(len(Z)), RNG.standard_normal(nc)
+    Ptv = np.bincount(idx.ravel(), (w * v[:, None]).ravel(), minlength=nc)
+    assert np.isclose(Ptv @ u, v @ np.sum(w * u[idx], axis=1))
+
+
 def test_lbfgs_quadratic():
     """On an ill-conditioned quadratic, L-BFGS with exact step converges in few iterations."""
     n = 30
@@ -529,7 +549,7 @@ def test_line_search_diverged_trial(tmp_path):
     from semfwi import inversion
 
     class Quadratic:
-        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        size, n, active, scaling, basis, nsim = 4, 4, ("lambda",), None, None, 0
         cfg = SimpleNamespace(workdir=str(tmp_path))
 
         def bound(self, x):
@@ -554,7 +574,7 @@ def test_restart_removes_stale_trials(tmp_path):
     from semfwi import inversion
 
     class Quadratic:
-        size, n, active, scaling, nsim = 4, 4, ("lambda",), None, 0
+        size, n, active, scaling, basis, nsim = 4, 4, ("lambda",), None, None, 0
         cfg = SimpleNamespace(workdir=str(tmp_path))
 
         def bound(self, x):
@@ -581,7 +601,7 @@ def test_first_stage_failure_next_stage(tmp_path):
     from semfwi import inversion
 
     class Flat:
-        size, n, active, scaling, nsim = 50, 50, ("lambda",), None, 0
+        size, n, active, scaling, basis, nsim = 50, 50, ("lambda",), None, None, 0
         cfg = SimpleNamespace(workdir=str(tmp_path))
 
         def bound(self, x):
@@ -617,7 +637,7 @@ def test_frozen_blocks(tmp_path):
     from semfwi import inversion
 
     class Quadratic:  # two blocks of 10 unknowns, coupled by the curvature
-        n, active, scaling, nsim = 10, ("a", "b"), None, 0
+        n, active, scaling, basis, nsim = 10, ("a", "b"), None, None, 0
         size = 20
         cfg = SimpleNamespace(workdir=str(tmp_path))
         c = np.logspace(0, 1, 20)
