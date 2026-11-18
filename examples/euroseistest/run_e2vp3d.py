@@ -7,7 +7,9 @@
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
     python run_e2vp3d.py bedrock --fmax 1 --time 24   # sediment thickness from H/V and the vertical array of that forward
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
-    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py psf --bedrock f1_t24     # point-spread functions of K and G at 100 and 300 m depth
+    python run_e2vp3d.py psf --bedrock f1_t24 --at 500 -500   # ... under the station (500, -500)
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
@@ -16,6 +18,11 @@ gradcheck and invert: the first 500 m on the parameter grid, data of the true mo
 (inverse crime); the start is a 1-D profile that does not use the true model, or with --bedrock sediments
 down to the thickness map of bedrock, estimated from the data (see start_model and bedrock). The descent
 directions vary linearly in z between every ZSTEP-th level of the grid (_z4 in the work directory).
+--param: kg (K and G, default) or vs (Vs alone, Vp / Vs of the start kept at each node, problem.Problem).
+psf: Hessian-vector products at the start for Gaussian bumps of K and G (standard deviation 100 m) at 100 and 300 m
+below the surface, where the true sediments are thickest or under the station --at (semfwi.hessian; point-spread
+functions as in Fichtner & Trampert 2011): the spread of the response is the
+resolution there, its part in the other parameter the K-G crosstalk; psf_<tag>.npz and .json.
 --nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
 files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
@@ -231,14 +238,16 @@ def make_problem(args, work):
     lam_t, mu_t, rho = true_model(cfg, basin)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
     lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz" if args.bedrock else None)
-    pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow", zstep=ZSTEP)
+    pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow", zstep=ZSTEP,
+                         active=("b",) if args.param == "vs" else ("a", "b"))
     return pb, (lam_t, mu_t), basin
 
 
 def gradcheck(args):
     """Directional derivative along a smooth bump of K (block a) then G (block b), 60 m below the surface
     at (500, -500) m: g . dx against (J(x + h dx) - J(x)) / h."""
-    pb, _, basin = make_problem(args, f"{ROOT}/gradcheck_f{args.fmax:g}")
+    tag = f"f{args.fmax:g}" + ("" if args.param == "kg" else f"_{args.param}") + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
+    pb, _, basin = make_problem(args, f"{ROOT}/gradcheck_{tag}")
     x = np.zeros(pb.size)
     J0, _, g = pb.evaluate(x, "x0")
     X, Y, Z = (c[pb.mask] for c in pb.cfg.grid.mesh())
@@ -254,7 +263,44 @@ def gradcheck(args):
             dfdh = (Jh - J0) / h
             rows.append(dict(block=blk, h=h, dco=float(dco), dfdh=float(dfdh), rel=float(abs(dfdh - dco) / abs(dco))))
             print(f"{blk} h={h:g}: adjoint {dco:.6e}  finite difference {dfdh:.6e}  relative gap {rows[-1]['rel']:.2e}", flush=True)
-    json.dump(dict(J0=float(J0), rows=rows), open(f"{ROOT}/gradcheck_f{args.fmax:g}.json", "w"), indent=1)
+    json.dump(dict(J0=float(J0), rows=rows), open(f"{ROOT}/gradcheck_{tag}.json", "w"), indent=1)
+
+
+def psf(args):
+    """Point-spread functions at the start model (module docstring): for each bump, the response in each block as a
+    grid field, and its centre of mass, its standard deviations horizontally and vertically (weights |H v|), and its
+    norm per block (crosstalk)."""
+    from semfwi import hessian
+    tag = f"f{args.fmax:g}_{args.param}" + (f"_bedrock-{args.bedrock}" if args.bedrock else "") \
+        + (f"_at{args.at[0]:g}_{args.at[1]:g}" if args.at else "")
+    pb, _, basin = make_problem(args, f"{ROOT}/psf_{tag}")
+    st = np.array(pb.cfg.stations)
+    sed = basin._bilinear(basin.surface, st[:, 0], st[:, 1]) - basin._bilinear(basin.bedrock, st[:, 0], st[:, 1])
+    x0, y0 = args.at or st[int(np.argmax(sed))][:2]  # by default the station on the thickest sediments of the true model
+    H = hessian.Hessian(pb, np.zeros(pb.size), "psf", dx=1e-2)
+    X, Y, Z = pb.cfg.grid.mesh()
+    depth = (basin.mesh_surface(X, Y) - Z)[pb.mask]
+    X, Y = X[pb.mask], Y[pb.mask]
+    out, rows = {}, []
+    for blk in pb.active:
+        for d in (100., 300.):
+            z = float(basin.mesh_surface(x0, y0)) - d
+            v = hessian.bump(pb, blk, (x0, y0, z), width=100.)
+            hv = H(v)
+            row = dict(block=blk, depth=d, x=float(x0), y=float(y0),
+                       sediments=float(basin._bilinear(basin.surface, x0, y0) - basin._bilinear(basin.bedrock, x0, y0)))
+            for i, b in enumerate(pb.active):
+                h = hv[i * pb.n:(i + 1) * pb.n]
+                w = np.abs(h) / np.abs(h).sum()
+                cx, cy, cd = (float(w @ c) for c in (X, Y, depth))
+                row[b] = dict(norm=float(np.linalg.norm(h)), centre=(cx, cy, cd),
+                              sigma_h=float(np.sqrt(w @ ((X - cx) ** 2 + (Y - cy) ** 2) / 2)),
+                              sigma_z=float(np.sqrt(w @ (depth - cd) ** 2)), peak=float(np.abs(h).max()))
+                out[f"{blk}{d:g}_{b}"] = pb.grid_field(h)
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+    np.savez(f"{ROOT}/psf_{tag}.npz", **out)
+    json.dump(rows, open(f"{ROOT}/psf_{tag}.json", "w"), indent=1)
 
 
 def invert(args):
@@ -285,16 +331,17 @@ def invert(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert"))
+    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf"))
     ap.add_argument("--fmax", type=float, default=0.5)
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
     ap.add_argument("--time", type=float, default=None, help="forward, site: simulated time (s), default 3 / fmax + 6")
-    ap.add_argument("--param", choices=("lame", "kg"), default="kg")
+    ap.add_argument("--param", choices=("lame", "kg", "vs"), default="kg")
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
     ap.add_argument("--bedrock", metavar="TAG", help="invert, gradcheck: start from bedrock_TAG.npz (bedrock command)")
+    ap.add_argument("--at", type=float, nargs=2, metavar=("X", "Y"), help="psf: bumps under this surface station")
     ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
     ap.add_argument("--pml", choices=("follow", "copy"), default="follow",
                     help="forward: PMLs of the sediment layers, mean of their layer or extension of the model files")
@@ -304,7 +351,7 @@ def main():
     if args.what == "prepare":
         e2vp2.prepare(NPZ)
     else:
-        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert}[args.what](args)
+        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf}[args.what](args)
 
 
 if __name__ == "__main__":

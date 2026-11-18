@@ -6,12 +6,16 @@ for the active parameters (active, a subset of ("a", "b")):
   param = "vel"  : a = Vp / Vp_ref - 1,         b = Vs / Vs_ref - 1,
                    with mu = rho Vs^2, lambda = rho Vp^2 - 2 rho Vs^2;
   param = "kg"   : a = K / K_ref - 1,           b = G / G_ref - 1,
-                   bulk and shear moduli, with lambda = K - 2 G / 3, mu = G.
+                   bulk and shear moduli, with lambda = K - 2 G / 3, mu = G;
+  param = "vs"   : b = Vs / Vs_ref - 1 only, Vp / Vs kept at its reference value at each node:
+                   lambda and mu both scale by (1 + b)^2, Poisson's ratio stays that of the reference
+                   (Vs alone with a fixed Vp / Vs, as in near-surface FWI, e.g. Seylabi et al. 2020).
 An inactive parameter keeps the value from fixed (the reference model by default). rho and the
 nodes close to the PMLs stay fixed. SEM3D always reads lambda and mu; for velocities, the gradient
 follows from the chain rule:
   dJ/dVp = 2 rho Vp dJ/dlambda,   dJ/dVs = 2 rho Vs (dJ/dmu - 2 dJ/dlambda),
-  dJ/dK = dJ/dlambda,              dJ/dG = dJ/dmu - 2/3 dJ/dlambda.
+  dJ/dK = dJ/dlambda,              dJ/dG = dJ/dmu - 2/3 dJ/dlambda,
+  dJ/db = 2 (1 + b) (lambda_ref dJ/dlambda + mu_ref dJ/dmu)   ("vs").
 
 zstep: the descent directions of each block in the span of a coarse vertical basis P (model.vertical_basis,
 unknowns every zstep levels of the grid, linear in z between them), by the L-BFGS preconditioner S P P^T S
@@ -100,7 +104,8 @@ def poisson(lam, mu):
 class Problem:
     def __init__(self, cfg, runner, dobs, lam_ref, mu_ref, rho_ref, param="lame", active=("a", "b"),
                  fixed=None, pml="follow", backend=None, zstep=1):
-        assert param in ("lame", "vel", "kg"), param
+        assert param in ("lame", "vel", "kg", "vs"), param
+        assert param != "vs" or tuple(active) == ("b",), active
         self.cfg, self.runner, self.dobs, self.param = cfg, runner, dobs, param
         self.backend = backend or LocalBackend()
         # gradient taper around the point sources (cfg.source_taper): a fixed factor, so a preconditioner
@@ -158,6 +163,11 @@ class Problem:
             if xb is not None:
                 mu[self.mask] = self.mu_ref[self.mask] * (1 + xb)
             lam = k - 2 * mu / 3
+        elif self.param == "vs":
+            lam, mu = self.fixed[0].copy(), self.fixed[1].copy()
+            s = (1 + xb) ** 2
+            lam[self.mask] = self.lam_ref[self.mask] * s
+            mu[self.mask] = self.mu_ref[self.mask] * s
         else:
             vp = np.sqrt((self.fixed[0] + 2 * self.fixed[1]) / rho)
             vs = np.sqrt(self.fixed[1] / rho)
@@ -184,7 +194,12 @@ class Problem:
         """x with mu >= frac mu_ref and lambda + 2 mu / 3 >= frac (lambda_ref + 2 mu_ref / 3) on every
         inverted node (projection: mu first, then lambda), and the number of nodes moved. A safety net
         for the line-search trials, not a regularization: the drivers log the nodes it moves. param =
-        "lame" or "kg" (x unchanged otherwise); in "kg", the same bounds on G and K."""
+        "lame", "kg" or "vs" (x unchanged otherwise); in "kg", the same bounds on G and K; in "vs", both scale by
+        (1 + b)^2, hence 1 + b >= sqrt(frac)."""
+        if self.param == "vs":
+            lo = np.sqrt(frac) - 1
+            moved = x < lo
+            return (np.maximum(x, lo), int(moved.sum())) if moved.any() else (x, 0)
         if self.param == "kg":
             lo = frac - 1  # G >= frac G_ref, K >= frac K_ref: x >= frac - 1 on each block
             moved = np.zeros(self.n, bool)
@@ -220,13 +235,16 @@ class Problem:
             ga, gb = gl * self.lam_ref, gm * self.mu_ref
         elif self.param == "kg":
             ga, gb = gl * self.k_ref, (gm - 2 * gl / 3) * self.mu_ref
+        elif self.param == "vs":
+            mu = self.to_model(x)[1]
+            ga, gb = None, 2 * np.sqrt(mu / self.mu_ref) * (gl * self.lam_ref + gm * self.mu_ref)
         else:
             lam, mu, rho = self.to_model(x)
             vp, vs = np.sqrt((lam + 2 * mu) / rho), np.sqrt(mu / rho)
             ga = 2 * rho * vp * gl * self.vp_ref
             gb = 2 * rho * vs * (gm - 2 * gl) * self.vs_ref
-        blocks = {"a": ga[self.mask], "b": gb[self.mask]}
-        return np.concatenate([blocks[p] for p in self.active])
+        blocks = {"a": ga, "b": gb}
+        return np.concatenate([blocks[p][self.mask] for p in self.active])
 
     def grid_field(self, v):
         out = np.zeros(self.cfg.grid.shape)

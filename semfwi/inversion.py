@@ -70,12 +70,13 @@ class Tikhonov:
 class TotalVariation(Tikhonov):
     """J_reg(x) = 1/2 sum_blocks sum_nodes w sqrt(|grad m|^2 + eps) on the grid (eq. 9), grad m in MPa/m
     by forward differences (zero at the last node of each axis), m = m_ref (1 + x) with a
-    homogeneous reference (as the 80 MPa initial model), param = "lame" (m = lambda, mu) or "kg" (m = K, G).
+    homogeneous reference (as the 80 MPa initial model), param = "lame" (m = lambda, mu) or "kg" (m = K, G); "vs": the
+    relative change of Vs scaled by the mean mu_ref, as the G block.
     w: the z spacing after the node (before it for the last node) over the mean spacing, 1 on a regular
     grid, so that the sum stays a quadrature of the integral on an explicit z axis."""
 
     def __init__(self, pb, eps=0.01):
-        assert pb.param in ("lame", "kg"), pb.param
+        assert pb.param in ("lame", "kg", "vs"), pb.param
         super().__init__(pb)
         self.eps = eps
         refs = {"a": pb.lam_ref if pb.param == "lame" else pb.k_ref, "b": pb.mu_ref}

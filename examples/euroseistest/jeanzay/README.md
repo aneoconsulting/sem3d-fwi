@@ -56,9 +56,14 @@ of the same `--fmax`, `--time` and `--nprocs`):
 ```bash
 sbatch --nodes=1 examples/euroseistest/jeanzay/forward.slurm 1               # forward_f1_t24_n40.npz
 python run_e2vp3d.py bedrock --fmax 1 --time 24 --nprocs 40                   # bedrock_f1_t24_n40.npz
-sbatch --nodes=2 --qos=qos_cpu-dev --time=02:00:00 examples/euroseistest/jeanzay/invert.slurm gradcheck --fmax 1 --bedrock f1_t24_n40
-sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --bedrock f1_t24_n40
+sbatch --nodes=2 --qos=qos_cpu-dev --time=02:00:00 examples/euroseistest/jeanzay/invert.slurm gradcheck --fmax 1 --bedrock f1_t24_n40 --param vs
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm psf --fmax 1 --bedrock f1_t24_n40 --at 500 -500
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --bedrock f1_t24_n40 --param vs
 ```
+
+`--param vs` inverts Vs alone, Vp / Vs of the start kept: at 0.5 Hz, a bump of K or of G answers in both blocks, and
+K and G together brought Poisson's ratio below 0. `psf --at 500 -500` is the point-spread function under the station
+(500, -500), 2.5 km from every edge, to compare with `psf_f0.5_kg_bedrock-f1_t24_at500_-500` on the resolution.
 
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).
