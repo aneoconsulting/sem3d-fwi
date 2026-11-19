@@ -30,6 +30,8 @@ includes the PML kernels, but each edge node drives a whole PML column and gets 
 gradient than the interior, which stalls the inversion), None (mesher properties) or a fixed
 (lam, mu, rho). The PML damping uses cfg.pml_damping_vp when set (independent of the model).
 
+InterfaceProblem: the unknowns are the depth of one interface on a coarse map instead (its docstring).
+
 observed computes the data of a true model, model_errors the errors of an inversion to it.
 Run directories are prepared here; simulations and kernels are computed by the
 backend (backend.LocalBackend by default, or armonik_backend.ArmoniKBackend), one source per job.
@@ -322,3 +324,81 @@ class Problem:
                 return {k: st[k] for k in st.files if k != "key"} if str(st["key"]) == key else None
         except (OSError, EOFError, KeyError, ValueError, zipfile.BadZipFile):
             return None
+
+
+class InterfaceProblem(Problem):
+    """Unknowns: the depth below the surface of one interface, h = h0 + scale x at the nodes of a regular map
+    (axes = (x, y), h0[iy, ix]), bilinear between them and clamped to its edges. On the inverted nodes, above it the
+    model is up = (lambda, mu), below it down (grid fields: e.g. a sediment profile and the rock), blended by
+      s = 1 / (1 + exp(-(depth - h) / width)),
+    so that J is differentiable in h, the nodes within a few widths of the interface carrying its gradient:
+      dJ/dh = - sum over the column of (dJ/dlambda (lambda_down - lambda_up) + dJ/dmu (mu_down - mu_up)) s (1 - s) / width,
+    spread back on the map nodes by the transpose of the bilinear interpolation. A few smooth unknowns move the whole
+    interface, which unknowns on every node can only move by changing the velocities of many nodes by large factors
+    (the shape of the top of the bedrock inverted from waveforms: Iwaki & Iwata 2011, with B-splines; the blend is
+    ours). The other nodes keep fixed = (lambda, mu); the reference model (errors, model_errors) is the blend at h0.
+    Bounds: 0 <= h <= hmax. depth: grid field, below the surface."""
+
+    def __init__(self, cfg, runner, dobs, axes, h0, up, down, depth, rho_ref, fixed, width, scale=100., hmax=np.inf,
+                 pml="follow", backend=None):
+        super().__init__(cfg, runner, dobs, fixed[0], fixed[1], rho_ref, active=("b",), fixed=fixed, pml=pml,
+                         backend=backend)
+        self.param, self.active = "interface", ("h",)
+        self.h0, self.scale, self.width, self.hmax = np.asarray(h0, float), scale, width, hmax
+        ax, ay = (np.asarray(a, float) for a in axes)
+        assert self.h0.shape == (len(ay), len(ax)), (self.h0.shape, len(ay), len(ax))
+        X, Y, _ = cfg.grid.mesh()
+        fx = np.clip((X[self.mask] - ax[0]) / (ax[1] - ax[0]), 0, len(ax) - 1 - 1e-9)
+        fy = np.clip((Y[self.mask] - ay[0]) / (ay[1] - ay[0]), 0, len(ay) - 1 - 1e-9)
+        i, j = fx.astype(int), fy.astype(int)
+        u, v = fx - i, fy - j
+        nx = len(ax)
+        self.idx = np.stack([j * nx + i, j * nx + i + 1, (j + 1) * nx + i, (j + 1) * nx + i + 1], axis=1)
+        self.w = np.stack([(1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v], axis=1)
+        self.depth = depth[self.mask]
+        self.up = [a[self.mask] for a in up]
+        self.jump = [d[self.mask] - a[self.mask] for a, d in zip(up, down)]
+        self.n, self.scaling, self.basis = self.h0.size, None, None
+        lam, mu, _ = self.to_model(np.zeros(self.n))
+        self.lam_ref, self.mu_ref = lam, mu
+        self.vp_ref = np.sqrt((lam + 2 * mu) / rho_ref)
+        self.vs_ref = np.sqrt(mu / rho_ref)
+        self.k_ref = lam + 2 * mu / 3
+
+    def interface(self, x):
+        """h on the map nodes (ny, nx)."""
+        return self.h0 + self.scale * x.reshape(self.h0.shape)
+
+    def _blend(self, x):
+        h = np.sum(self.w * self.interface(x).ravel()[self.idx], axis=1)
+        t = np.tanh((self.depth - h) / (2 * self.width))
+        return 0.5 * (1 + t), 0.25 * (1 - t ** 2)  # s and s (1 - s)
+
+    def to_model(self, x):
+        s, _ = self._blend(x)
+        lam, mu = self.fixed[0].copy(), self.fixed[1].copy()
+        lam[self.mask] = self.up[0] + self.jump[0] * s
+        mu[self.mask] = self.up[1] + self.jump[1] * s
+        return lam, mu, self.rho_ref
+
+    def to_x(self, lam, mu):
+        raise NotImplementedError("the interface is not a function of (lambda, mu)")
+
+    def bound(self, x, frac=None):
+        """x with 0 <= h <= hmax, and the number of map nodes moved."""
+        h = self.interface(x).ravel()
+        hb = np.clip(h, 0., self.hmax)
+        moved = hb != h
+        if not moved.any():
+            return x, 0
+        x = x.copy()  # only the moved nodes are rewritten, the others keep x to the bit
+        x[moved] = (hb[moved] - self.h0.ravel()[moved]) / self.scale
+        return x, int(moved.sum())
+
+    def chain(self, x, gl, gm):
+        _, ds = self._blend(x)
+        g = -(gl[self.mask] * self.jump[0] + gm[self.mask] * self.jump[1]) * ds / self.width
+        return self.scale * np.bincount(self.idx.ravel(), (self.w * g[:, None]).ravel(), minlength=self.n)
+
+    def grid_field(self, v):
+        return v.reshape(self.h0.shape)

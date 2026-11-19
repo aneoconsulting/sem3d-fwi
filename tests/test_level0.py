@@ -206,7 +206,7 @@ def test_resume_with_other_ranks(tmp_path):
     assert np.max(np.abs(tr[0] - tr[1])) <= 1e-10 * np.max(np.abs(tr[1]))
 
 
-@pytest.mark.parametrize("param", ["lame", "vel", "kg"])
+@pytest.mark.parametrize("param", ["lame", "vel", "kg", "vs"])
 def test_chain_rule(param):
     """For J(lambda, mu) = <a, lambda> + <b, mu> + 1/2 <c, mu^2>, the gradient in x derived from
     dJ/dlambda and dJ/dmu by Problem.chain matches a centered finite difference."""
@@ -214,7 +214,8 @@ def test_chain_rule(param):
     cfg = Config(workdir="/nonexistent")
     g = cfg.grid
     one = np.ones(g.shape)
-    pb = Problem(cfg, None, None, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param=param)
+    pb = Problem(cfg, None, None, cfg.lam0 * one, cfg.mu0 * one, cfg.rho0 * one, param=param,
+                 active=("b",) if param == "vs" else ("a", "b"))
     a, b, c = (RNG.standard_normal(g.shape) for _ in range(3))
     c *= 1e-9
 
@@ -484,6 +485,56 @@ def test_node_scaling():
     assert np.isclose(d[0, 31, 31], d[30, 31, 31])             # face node = inner node of the same kind
     assert np.isclose(np.mean(1 / d), 1.)                       # mean volume / volume
     assert model.node_scaling(g, 2.5, (-20., -20., -45.), mask) is None
+
+
+def _interface_problem():
+    """InterfaceProblem on the default grid: a 3 x 3 map near 200 m depth, slower and softer above it."""
+    from semfwi.problem import InterfaceProblem
+    cfg = Config(workdir="/nonexistent")
+    one = np.ones(cfg.grid.shape)
+    _, _, Z = cfg.grid.mesh()
+    ax = np.array([-50., 200., 450.])
+    h0 = 200. + 10. * RNG.standard_normal((3, 3))
+    up, down = (0.5 * cfg.lam0 * one, 0.3 * cfg.mu0 * one), (cfg.lam0 * one, cfg.mu0 * one)
+    return InterfaceProblem(cfg, None, None, (ax, ax), h0, up, down, -Z, cfg.rho0 * one, down, width=25., hmax=400.)
+
+
+def test_interface_chain_rule():
+    """InterfaceProblem: for J(lambda, mu) = <a, lambda> + <b, mu> + 1/2 <c, mu^2>, chain matches a centered finite
+    difference in the depth of the interface; above it the model is up, below it down, and the reference is x = 0."""
+    pb = _interface_problem()
+    m = pb.mask
+    a, b, c = (RNG.standard_normal(pb.cfg.grid.shape) for _ in range(3))
+    c *= 1e-9
+
+    def J(x):
+        lam, mu, _ = pb.to_model(x)
+        return np.sum(a * lam) + np.sum(b * mu) + 0.5 * np.sum(c * mu ** 2)
+
+    x = 0.1 * RNG.standard_normal(pb.size)  # h within about 40 m of 200 m
+    lam, mu, _ = pb.to_model(x)
+    gx = pb.chain(x, a, b + c * mu)
+    dx = RNG.standard_normal(pb.size)
+    h = 1e-6
+    assert np.isclose(gx @ dx, (J(x + h * dx) - J(x - h * dx)) / (2 * h), rtol=1e-6)
+    depth = pb.depth
+    assert np.allclose(mu[m][depth < 30.], 0.3 * pb.cfg.mu0, rtol=2e-2)  # more than 5 widths away
+    assert np.allclose(mu[m][depth > 370.], pb.cfg.mu0, rtol=2e-2)
+    assert np.array_equal(pb.mu_ref, pb.to_model(np.zeros(pb.size))[1])
+    assert np.array_equal(mu[~m], pb.fixed[1][~m])
+
+
+def test_interface_bound():
+    """InterfaceProblem.bound: 0 <= h <= hmax on the map nodes, the others left unchanged to the bit."""
+    pb = _interface_problem()
+    x = 0.1 * RNG.standard_normal(pb.size)
+    assert pb.bound(x) == (x, 0)
+    x[0] = -10.              # 1 km above its h0: above the surface
+    x[1] = 5.                # 500 m below its h0: below hmax
+    xb, moved = pb.bound(x)
+    h = pb.interface(xb).ravel()
+    assert moved == 2 and np.isclose(h[0], 0.) and np.isclose(h[1], 400.)
+    assert np.array_equal(xb[2:], x[2:])
 
 
 def test_bound():

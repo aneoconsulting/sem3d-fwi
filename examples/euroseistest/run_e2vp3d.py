@@ -7,7 +7,7 @@
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
     python run_e2vp3d.py bedrock --fmax 1 --time 24   # sediment thickness from H/V and the vertical array of that forward
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
-    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs|interface]   # the first 500 m, from a 1-D start
     python run_e2vp3d.py psf --bedrock f1_t24     # point-spread functions of K and G at 100 and 300 m depth
     python run_e2vp3d.py psf --bedrock f1_t24 --at 500 -500   # ... under the station (500, -500)
 
@@ -18,7 +18,9 @@ gradcheck and invert: the first 500 m on the parameter grid, data of the true mo
 (inverse crime); the start is a 1-D profile that does not use the true model, or with --bedrock sediments
 down to the thickness map of bedrock, estimated from the data (see start_model and bedrock). The descent
 directions vary linearly in z between every ZSTEP-th level of the grid (_z4 in the work directory).
---param: kg (K and G, default) or vs (Vs alone, Vp / Vs of the start kept at each node, problem.Problem).
+--param: kg (K and G, default), vs (Vs alone, Vp / Vs of the start kept at each node, problem.Problem) or interface
+(with --bedrock: the depth of the bedrock on the 11 x 11 map of the start, sediments and rock of the start above and
+below it, problem.InterfaceProblem).
 psf: Hessian-vector products at the start for Gaussian bumps of K and G (standard deviation 100 m) at 100 and 300 m
 below the surface, where the true sediments are thickest or under the station --at (semfwi.hessian; point-spread
 functions as in Fichtner & Trampert 2011): the spread of the response is the
@@ -72,9 +74,20 @@ def start_model(cfg, basin, bedrock=None):
         return e2vp.lame(1600. + 1.5 * vs, vs, rho)
     b = np.load(bedrock)
     sed = depth < regular_bilinear(b["x"], b["y"], b["h"], X, Y)
+    (ls, ms), (lr, mr), _ = layers(cfg, basin, b)
+    return np.where(sed, ls, lr), np.where(sed, ms, mr), rho
+
+
+def layers(cfg, basin, b):
+    """(lambda, mu) of the sediments of the bedrock map b (Vs = v0 + g depth, Vp = 1600 m/s + 1.5 Vs) and of the first
+    crustal layer, at every node of the grid, and the depth below the meshed surface, clipped to [0, 500] m."""
+    X, Y, Z = cfg.grid.mesh()
+    depth = np.clip(basin.mesh_surface(X, Y) - Z, 0., 500.)
+    rho = basin.properties(X, Y, Z)[2]
     vs = b["v0"] + b["g"] * depth
     rock = basin.layers[2]
-    return e2vp.lame(np.where(sed, 1600. + 1.5 * vs, rock["vp"][0]), np.where(sed, vs, rock["vs"][0]), rho)
+    return (e2vp.lame(1600. + 1.5 * vs, vs, rho)[:2], e2vp.lame(np.full_like(vs, rock["vp"][0]), np.full_like(vs, rock["vs"][0]), rho)[:2],
+            depth)
 
 
 def regular_bilinear(x, y, a, X, Y):
@@ -238,6 +251,13 @@ def make_problem(args, work):
     lam_t, mu_t, rho = true_model(cfg, basin)
     dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
     lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz" if args.bedrock else None)
+    if args.param == "interface":
+        assert args.bedrock, "--param interface moves the bedrock map of --bedrock"
+        b = np.load(f"{ROOT}/bedrock_{args.bedrock}.npz")
+        up, down, depth = layers(cfg, basin, b)
+        pb = problem.InterfaceProblem(cfg, Runner(cfg), dobs, (b["x"], b["y"]), b["h"], up, down, depth, rho, (lam0, mu0),
+                                      width=cfg.grid.hs[2] / 2, hmax=500., pml="follow")
+        return pb, (lam_t, mu_t), basin
     pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow", zstep=ZSTEP,
                          active=("b",) if args.param == "vs" else ("a", "b"))
     return pb, (lam_t, mu_t), basin
@@ -245,14 +265,20 @@ def make_problem(args, work):
 
 def gradcheck(args):
     """Directional derivative along a smooth bump of K (block a) then G (block b), 60 m below the surface
-    at (500, -500) m: g . dx against (J(x + h dx) - J(x)) / h."""
+    at (500, -500) m: g . dx against (J(x + h dx) - J(x)) / h. --param interface: a bump of the bedrock depth
+    on its map, centred at the same point (h = 1e-2: 1 m deeper at its centre)."""
     tag = f"f{args.fmax:g}" + ("" if args.param == "kg" else f"_{args.param}") + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
     pb, _, basin = make_problem(args, f"{ROOT}/gradcheck_{tag}")
     x = np.zeros(pb.size)
     J0, _, g = pb.evaluate(x, "x0")
-    X, Y, Z = (c[pb.mask] for c in pb.cfg.grid.mesh())
-    depth = basin.mesh_surface(X, Y) - Z
-    bump = np.exp(-((X - 500.) ** 2 + (Y + 500.) ** 2) / (2 * 600. ** 2) - (depth - 60.) ** 2 / (2 * 40. ** 2))
+    if args.param == "interface":
+        b = np.load(f"{ROOT}/bedrock_{args.bedrock}.npz")
+        X, Y = (c.ravel() for c in np.meshgrid(b["x"], b["y"]))  # map nodes, h[iy, ix]
+        bump = np.exp(-((X - 500.) ** 2 + (Y + 500.) ** 2) / (2 * 600. ** 2))
+    else:
+        X, Y, Z = (c[pb.mask] for c in pb.cfg.grid.mesh())
+        depth = basin.mesh_surface(X, Y) - Z
+        bump = np.exp(-((X - 500.) ** 2 + (Y + 500.) ** 2) / (2 * 600. ** 2) - (depth - 60.) ** 2 / (2 * 40. ** 2))
     rows = []
     for i, blk in enumerate(pb.active):
         dx = np.zeros(pb.size)
@@ -271,6 +297,7 @@ def psf(args):
     grid field, and its centre of mass, its standard deviations horizontally and vertically (weights |H v|), and its
     norm per block (crosstalk)."""
     from semfwi import hessian
+    assert args.param != "interface", "psf: bumps on the grid nodes"
     tag = f"f{args.fmax:g}_{args.param}" + (f"_bedrock-{args.bedrock}" if args.bedrock else "") \
         + (f"_at{args.at[0]:g}_{args.at[1]:g}" if args.at else "")
     pb, _, basin = make_problem(args, f"{ROOT}/psf_{tag}")
@@ -325,7 +352,8 @@ def invert(args):
                     err_vs_sed=float(np.linalg.norm(vs - vs_t) / np.linalg.norm(vs_0 - vs_t)),
                     nu_min=float(nu.min()), nu_max=float(nu.max()))
 
-    inversion.invert(work, [(f"f{args.fmax:g}", args.iters)], mk, reg="tv", callback=errors,
+    # interface: a few smooth unknowns (the bedrock map), no regularization
+    inversion.invert(work, [(f"f{args.fmax:g}", args.iters)], mk, reg=None if args.param == "interface" else "tv", callback=errors,
                      log=lambda s: print(s, flush=True))
 
 
@@ -336,7 +364,7 @@ def main():
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
     ap.add_argument("--time", type=float, default=None, help="forward, site: simulated time (s), default 3 / fmax + 6")
-    ap.add_argument("--param", choices=("lame", "kg", "vs"), default="kg")
+    ap.add_argument("--param", choices=("lame", "kg", "vs", "interface"), default="kg")
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
