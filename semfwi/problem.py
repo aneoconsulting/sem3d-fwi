@@ -337,10 +337,14 @@ class InterfaceProblem(Problem):
     interface, which unknowns on every node can only move by changing the velocities of many nodes by large factors
     (the shape of the top of the bedrock inverted from waveforms: Iwaki & Iwata 2011, with B-splines; the blend is
     ours). The other nodes keep fixed = (lambda, mu); the reference model (errors, model_errors) is the blend at h0.
-    Bounds: 0 <= h <= hmax. depth: grid field, below the surface."""
+    Bounds: 0 <= h <= hmax. depth: grid field, below the surface.
+    profile = (f, p0, pscale): the properties above the interface are unknowns too, through k parameters p = p0 +
+    pscale x[n:] (after the n map nodes), f(p) -> (lambda_up, mu_up, dlambda_up/dp, dmu_up/dp), grid fields, the
+    derivatives (k, ...); then up is not used, and
+      dJ/dp = sum of (dJ/dlambda dlambda_up/dp + dJ/dmu dmu_up/dp) (1 - s), without bounds."""
 
     def __init__(self, cfg, runner, dobs, axes, h0, up, down, depth, rho_ref, fixed, width, scale=100., hmax=np.inf,
-                 pml="follow", backend=None):
+                 pml="follow", backend=None, profile=None):
         super().__init__(cfg, runner, dobs, fixed[0], fixed[1], rho_ref, active=("b",), fixed=fixed, pml=pml,
                          backend=backend)
         self.param, self.active = "interface", ("h",)
@@ -356,18 +360,40 @@ class InterfaceProblem(Problem):
         self.idx = np.stack([j * nx + i, j * nx + i + 1, (j + 1) * nx + i, (j + 1) * nx + i + 1], axis=1)
         self.w = np.stack([(1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v], axis=1)
         self.depth = depth[self.mask]
-        self.up = [a[self.mask] for a in up]
-        self.jump = [d[self.mask] - a[self.mask] for a, d in zip(up, down)]
+        self.down = [d[self.mask] for d in down]
+        self.profile, self.k = None, 0
+        if profile is None:
+            self.up = [a[self.mask] for a in up]
+        else:
+            f, p0, ps = profile
+            self.profile, self.p0, self.pscale = f, np.asarray(p0, float), np.asarray(ps, float)
+            self.k = len(self.p0)
         self.n, self.scaling, self.basis = self.h0.size, None, None
-        lam, mu, _ = self.to_model(np.zeros(self.n))
+        lam, mu, _ = self.to_model(np.zeros(self.size))
         self.lam_ref, self.mu_ref = lam, mu
         self.vp_ref = np.sqrt((lam + 2 * mu) / rho_ref)
         self.vs_ref = np.sqrt(mu / rho_ref)
         self.k_ref = lam + 2 * mu / 3
 
+    @property
+    def size(self):
+        return self.n + self.k
+
     def interface(self, x):
         """h on the map nodes (ny, nx)."""
-        return self.h0 + self.scale * x.reshape(self.h0.shape)
+        return self.h0 + self.scale * x[:self.n].reshape(self.h0.shape)
+
+    def params(self, x):
+        """p of the profile above the interface."""
+        return self.p0 + self.pscale * x[self.n:]
+
+    def _up(self, x):
+        """(lambda, mu) above the interface on the inverted nodes, and their derivatives in p (None without profile)."""
+        if self.profile is None:
+            return self.up, None
+        lam, mu, dlam, dmu = self.profile(self.params(x))
+        m = self.mask
+        return [lam[m], mu[m]], [dlam[:, m], dmu[:, m]]
 
     def _blend(self, x):
         h = np.sum(self.w * self.interface(x).ravel()[self.idx], axis=1)
@@ -376,29 +402,36 @@ class InterfaceProblem(Problem):
 
     def to_model(self, x):
         s, _ = self._blend(x)
+        up, _ = self._up(x)
         lam, mu = self.fixed[0].copy(), self.fixed[1].copy()
-        lam[self.mask] = self.up[0] + self.jump[0] * s
-        mu[self.mask] = self.up[1] + self.jump[1] * s
+        lam[self.mask] = up[0] + (self.down[0] - up[0]) * s
+        mu[self.mask] = up[1] + (self.down[1] - up[1]) * s
         return lam, mu, self.rho_ref
 
     def to_x(self, lam, mu):
         raise NotImplementedError("the interface is not a function of (lambda, mu)")
 
     def bound(self, x, frac=None):
-        """x with 0 <= h <= hmax, and the number of map nodes moved."""
+        """x with 0 <= h <= hmax, and the number of map nodes moved (p is not bounded)."""
         h = self.interface(x).ravel()
         hb = np.clip(h, 0., self.hmax)
         moved = hb != h
         if not moved.any():
             return x, 0
         x = x.copy()  # only the moved nodes are rewritten, the others keep x to the bit
-        x[moved] = (hb[moved] - self.h0.ravel()[moved]) / self.scale
+        i = np.flatnonzero(moved)
+        x[i] = (hb[i] - self.h0.ravel()[i]) / self.scale
         return x, int(moved.sum())
 
     def chain(self, x, gl, gm):
-        _, ds = self._blend(x)
-        g = -(gl[self.mask] * self.jump[0] + gm[self.mask] * self.jump[1]) * ds / self.width
-        return self.scale * np.bincount(self.idx.ravel(), (self.w * g[:, None]).ravel(), minlength=self.n)
+        s, ds = self._blend(x)
+        up, dup = self._up(x)
+        gl, gm = gl[self.mask], gm[self.mask]
+        g = -(gl * (self.down[0] - up[0]) + gm * (self.down[1] - up[1])) * ds / self.width
+        gh = self.scale * np.bincount(self.idx.ravel(), (self.w * g[:, None]).ravel(), minlength=self.n)
+        if dup is None:
+            return gh
+        return np.concatenate([gh, self.pscale * ((dup[0] * gl + dup[1] * gm) @ (1 - s))])
 
     def grid_field(self, v):
-        return v.reshape(self.h0.shape)
+        return v[:self.n].reshape(self.h0.shape)

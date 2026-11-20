@@ -79,5 +79,15 @@ python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --mean --tag mean
 sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock mean --param interface --iters 30
 ```
 
+`--param interface-v0g` inverts v0 and g of the sediment profile (Vs = v0 + g depth) with the map; `bedmap --from`
+carries them on. A gradient check given `+h` and `-h` also prints the centered difference: at 1 Hz, J is so curved
+along the depth of the bedrock that the forward difference converges only for h < 1e-4 (gap 9.5 % at 1e-3, centered
+0.9 %):
+
+```bash
+sbatch --nodes=2 --qos=qos_cpu-dev --time=01:00:00 examples/euroseistest/jeanzay/invert.slurm gradcheck --fmax 1 --bedrock f1_t24_n40 --param interface --h 1e-3 -1e-3
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock if05 --param interface-v0g --iters 30
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

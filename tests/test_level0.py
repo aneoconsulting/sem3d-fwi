@@ -524,6 +524,48 @@ def test_interface_chain_rule():
     assert np.array_equal(mu[~m], pb.fixed[1][~m])
 
 
+def test_interface_profile_chain_rule():
+    """InterfaceProblem with profile: Vs = v0 + g depth above the interface (Vp = 1600 + 1.5 Vs), (v0, g) unknowns after
+    the map; chain matches a centered finite difference in both, and x = 0 gives the profile of p0."""
+    from semfwi.problem import InterfaceProblem
+    cfg = Config(workdir="/nonexistent")
+    one = np.ones(cfg.grid.shape)
+    _, _, Z = cfg.grid.mesh()
+    depth, rho = -Z, cfg.rho0 * one
+
+    def f(p):
+        vs = p[0] + p[1] * depth
+        vp = 1600. + 1.5 * vs
+        dvs = np.stack([one, depth])
+        return rho * (vp ** 2 - 2 * vs ** 2), rho * vs ** 2, rho * (3 * vp - 4 * vs) * dvs, 2 * rho * vs * dvs
+
+    ax = np.array([-50., 200., 450.])
+    h0 = 200. + 10. * RNG.standard_normal((3, 3))
+    down = (cfg.lam0 * one, cfg.mu0 * one)
+    pb = InterfaceProblem(cfg, None, None, (ax, ax), h0, None, down, depth, rho, down, width=25., hmax=400.,
+                          profile=(f, (300., 1.25), (100., 0.5)))
+    assert pb.size == 11
+    m = pb.mask
+    a, b, c = (RNG.standard_normal(cfg.grid.shape) for _ in range(3))
+    c *= 1e-9
+
+    def J(x):
+        lam, mu, _ = pb.to_model(x)
+        return np.sum(a * lam) + np.sum(b * mu) + 0.5 * np.sum(c * mu ** 2)
+
+    x = 0.1 * RNG.standard_normal(pb.size)
+    lam, mu, _ = pb.to_model(x)
+    gx = pb.chain(x, a, b + c * mu)
+    for dx in (RNG.standard_normal(pb.size), np.eye(pb.size)[9], np.eye(pb.size)[10]):  # all, then v0, then g
+        h = 1e-6
+        assert np.isclose(gx @ dx, (J(x + h * dx) - J(x - h * dx)) / (2 * h), rtol=1e-6)
+    mu0 = pb.to_model(np.zeros(pb.size))[1]
+    shallow = pb.depth < 30.
+    assert np.allclose(mu0[m][shallow], (rho[m] * (300. + 1.25 * pb.depth) ** 2)[shallow], rtol=2e-2)
+    xb, moved = pb.bound(np.r_[np.full(9, -10.), x[9:]])
+    assert moved == 9 and np.allclose(pb.interface(xb), 0.) and np.array_equal(xb[9:], x[9:])
+
+
 def test_interface_bound():
     """InterfaceProblem.bound: 0 <= h <= hmax on the map nodes, the others left unchanged to the bit."""
     pb = _interface_problem()
