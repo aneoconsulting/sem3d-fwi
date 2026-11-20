@@ -65,5 +65,19 @@ sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --be
 K and G together brought Poisson's ratio below 0. `psf --at 500 -500` is the point-spread function under the station
 (500, -500), 2.5 km from every edge, to compare with `psf_f0.5_kg_bedrock-f1_t24_at500_-500` on the resolution.
 
+`--param interface` inverts the depth of the bedrock on the 11 x 11 map instead, the sediments and rock of the start
+above and below it. `bedmap` turns an iterate of such an inversion into a new map, the start of the next one, at a
+higher frequency or in Vs alone; `bedmap --mean` makes a flat map, the same start without what the H/V map says of the
+shape (on the login node, it only reads and writes small files):
+
+```bash
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock f1_t24_n40 --param interface --iters 30
+python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --from invert_f0.5_s3_interface_z4_bedrock-f1_t24_n40_n80/x030.npy --tag if05
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --bedrock if05 --param interface --iters 30
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 1 --bedrock if05 --param vs --iters 30
+python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --mean --tag mean
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock mean --param interface --iters 30
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

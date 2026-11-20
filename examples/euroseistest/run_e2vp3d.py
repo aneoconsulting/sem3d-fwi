@@ -10,6 +10,8 @@
     python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs|interface]   # the first 500 m, from a 1-D start
     python run_e2vp3d.py psf --bedrock f1_t24     # point-spread functions of K and G at 100 and 300 m depth
     python run_e2vp3d.py psf --bedrock f1_t24 --at 500 -500   # ... under the station (500, -500)
+    python run_e2vp3d.py bedmap --bedrock f1_t24 --from invert_f0.5_s3_interface_z4_bedrock-f1_t24/x010.npy --tag f1_t24_if05
+    python run_e2vp3d.py bedmap --bedrock f1_t24 --mean --tag f1_t24_mean   # bedrock_<tag>.npz, a start for --bedrock <tag>
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
@@ -25,6 +27,10 @@ psf: Hessian-vector products at the start for Gaussian bumps of K and G (standar
 below the surface, where the true sediments are thickest or under the station --at (semfwi.hessian; point-spread
 functions as in Fichtner & Trampert 2011): the spread of the response is the
 resolution there, its part in the other parameter the K-G crosstalk; psf_<tag>.npz and .json.
+bedmap: a new bedrock map from that of --bedrock, its depth replaced by the map of an interface inversion (--from, an
+iterate x###.npy of its work directory, relative to $SEMFWI_RUNS/e2vp3d), or by its mean (--mean: a flat bedrock, to see
+what the inversion owes to the H/V map); the profile v0 + g depth kept. --bedrock <tag> then starts any inversion from
+it: from the bedrock map of 0.5 Hz to 1 Hz, or the velocities (--param vs) after the interface.
 --nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
 files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
@@ -46,6 +52,7 @@ from semfwi.runner import Runner  # noqa: E402
 # directions on every ZSTEP-th level of the grid (h / 10 vertically): h / 2.5, its horizontal step, wider than the
 # largest gap between GLL planes (0.33 h), so that no level is left without gradient (Problem zstep)
 ZSTEP = 4
+HSCALE = 100.  # m of bedrock depth per unit of x (InterfaceProblem scale)
 ROOT = os.path.join(RUNS_DIR, "e2vp3d")
 NPZ = os.path.join(ROOT, "basin.npz")
 
@@ -256,7 +263,7 @@ def make_problem(args, work):
         b = np.load(f"{ROOT}/bedrock_{args.bedrock}.npz")
         up, down, depth = layers(cfg, basin, b)
         pb = problem.InterfaceProblem(cfg, Runner(cfg), dobs, (b["x"], b["y"]), b["h"], up, down, depth, rho, (lam0, mu0),
-                                      width=cfg.grid.hs[2] / 2, hmax=500., pml="follow")
+                                      width=cfg.grid.hs[2] / 2, scale=HSCALE, hmax=500., pml="follow")
         return pb, (lam_t, mu_t), basin
     pb = problem.Problem(cfg, Runner(cfg), dobs, lam0, mu0, rho, param=args.param, pml="follow", zstep=ZSTEP,
                          active=("b",) if args.param == "vs" else ("a", "b"))
@@ -357,9 +364,22 @@ def invert(args):
                      log=lambda s: print(s, flush=True))
 
 
+def bedmap(args):
+    """bedrock_<--tag>.npz: the map of --bedrock with its depth h replaced (module docstring)."""
+    b = dict(np.load(f"{ROOT}/bedrock_{args.bedrock}.npz"))
+    if args.mean:
+        h = np.full_like(b["h"], b["h"].mean())
+    else:
+        assert f"bedrock-{args.bedrock}" in args.src, f"{args.src} is not an inversion from bedrock_{args.bedrock}"
+        h = b["h"] + HSCALE * np.load(f"{ROOT}/{args.src}").reshape(b["h"].shape)  # InterfaceProblem.interface
+    print(f"bedrock_{args.tag}: depth {h.min():.0f} to {h.max():.0f} m, mean {h.mean():.0f} m "
+          f"(bedrock_{args.bedrock}: {b['h'].min():.0f} to {b['h'].max():.0f}, mean {b['h'].mean():.0f})")
+    np.savez(f"{ROOT}/bedrock_{args.tag}.npz", **{**b, "h": h})
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf"))
+    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf", "bedmap"))
     ap.add_argument("--fmax", type=float, default=0.5)
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
@@ -369,6 +389,9 @@ def main():
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
     ap.add_argument("--bedrock", metavar="TAG", help="invert, gradcheck: start from bedrock_TAG.npz (bedrock command)")
+    ap.add_argument("--from", dest="src", metavar="X_NPY", help="bedmap: iterate of an interface inversion")
+    ap.add_argument("--mean", action="store_true", help="bedmap: the depth of the map replaced by its mean")
+    ap.add_argument("--tag", help="bedmap: written to bedrock_TAG.npz")
     ap.add_argument("--at", type=float, nargs=2, metavar=("X", "Y"), help="psf: bumps under this surface station")
     ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
     ap.add_argument("--pml", choices=("follow", "copy"), default="follow",
@@ -379,7 +402,7 @@ def main():
     if args.what == "prepare":
         e2vp2.prepare(NPZ)
     else:
-        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf}[args.what](args)
+        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf, "bedmap": bedmap}[args.what](args)
 
 
 if __name__ == "__main__":
