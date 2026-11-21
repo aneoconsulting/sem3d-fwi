@@ -99,5 +99,14 @@ python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --truth --fmax 0.75 --tag truth
 sbatch --nodes=2 --qos=qos_cpu-dev --time=00:30:00 examples/euroseistest/jeanzay/invert.slurm jmap --fmax 0.75 --bedrock truth075
 ```
 
+`jswap --swap vp|profile|transition` gives J of the true model (0: the data come from it) with one fixed part of
+`--param interface` swapped in: the rule Vp = 1600 + 1.5 Vs in the sediments, one line in depth for their Vs and Vp,
+or the logistic transition at the true bedrock. The part that brings J up to that of the map of `bedmap --truth` is
+the one that makes the data prefer a wrong map:
+
+```bash
+sbatch --nodes=2 --qos=qos_cpu-dev --time=00:30:00 examples/euroseistest/jeanzay/invert.slurm jswap --fmax 0.75 --swap vp
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

@@ -14,6 +14,7 @@
     python run_e2vp3d.py bedmap --bedrock f1_t24 --mean --tag f1_t24_mean   # bedrock_<tag>.npz, a start for --bedrock <tag>
     python run_e2vp3d.py bedmap --bedrock f1_t24 --truth --fmax 0.75 --tag f1_t24_truth   # the best map of the true bedrock
     python run_e2vp3d.py jmap --fmax 0.75 --bedrock f1_t24_truth   # J of that map
+    python run_e2vp3d.py jswap --fmax 0.5 --swap vp   # J of the true model with one fixed part of --param interface
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
@@ -37,6 +38,9 @@ closest to the true bedrock in the least-squares sense over the inverted nodes o
 of --param interface applied to it), a diagnostic that judges the parametrisation and never starts an inversion.
 jmap: J of the map of --bedrock, sediments and rock as in --param interface; on a map of bedmap --truth, whether the data prefer
 the true bedrock to the maps the inversion finds (the J of these is in the history of the inversions).
+jswap: J of the true model (0 on the data, an inverse crime) with one fixed part of --param interface swapped in, the
+rule of Vp, the linear sediment profile or the transition: which one keeps the true bedrock above the J of the
+inverted maps.
 --nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
 files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
@@ -272,13 +276,18 @@ def site(args):
     json.dump(out, open(f"{ROOT}/site_{base_tag(args)}.json", "w"))
 
 
-def make_problem(args, work):
+def observed(args, work):
+    """cfg and basin of a problem in work, the data of the true model on its grid, and that model (lambda, mu, rho)."""
     n = "" if args.nprocs == 4 else f"_n{args.nprocs}"
     cfg, basin = e2vp2.config_3d(work, NPZ, fmax=args.fmax, nsources=args.nsources, nprocs=args.nprocs)
     data, _ = e2vp2.config_3d(f"{ROOT}/data_f{args.fmax:g}_s{args.nsources}{n}", NPZ, fmax=args.fmax, nsources=args.nsources,
                               nprocs=args.nprocs)
     lam_t, mu_t, rho = true_model(cfg, basin)
-    dobs = problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow")
+    return cfg, basin, problem.observed(data, Runner(data), data.workdir, lam_t, mu_t, rho, pml="follow"), (lam_t, mu_t, rho)
+
+
+def make_problem(args, work):
+    cfg, basin, dobs, (lam_t, mu_t, rho) = observed(args, work)
     lam0, mu0, _ = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz" if args.bedrock else None)
     if args.param.startswith("interface"):
         assert args.bedrock, "--param interface moves the bedrock map of --bedrock"
@@ -439,9 +448,46 @@ def jmap(args):
         json.dump(dict(J=float(J), fmax=args.fmax, bedrock=args.bedrock, nsources=args.nsources), f, indent=1)
 
 
+def jswap(args):
+    """J of the true model with one fixed part of --param interface swapped in (a diagnostic, like bedmap --truth), the
+    density true: vp, Vp = 1600 m/s + 1.5 Vs in the sediments; profile, the Vs and the Vp of the sediments each replaced by
+    its best line in depth (least squares over the sediment nodes below the surface); transition, the sharp bedrock
+    replaced by the logistic transition of InterfaceProblem (width hz / 2) at the true depth, between the sediments
+    continued below it by their base values and the first crustal layer. One forward per source; jswap_<tag>.json."""
+    tag = f"f{args.fmax:g}_{args.swap}" + ("" if args.nprocs == 4 else f"_n{args.nprocs}")
+    cfg, basin, dobs, (_, _, rho) = observed(args, f"{ROOT}/jswap_{tag}")
+    X, Y, Z = cfg.grid.mesh()
+    vp, vs, _ = basin.properties(X, Y, Z)
+    vp0, vs0 = vp.copy(), vs.copy()
+    sed = vs < 2000.
+    depth = basin.mesh_surface(X, Y) - Z
+    if args.swap == "vp":
+        vp = np.where(sed, 1600. + 1.5 * vs, vp)
+    elif args.swap == "profile":
+        fit = sed & (depth >= 0.)
+        d = np.maximum(depth[sed], 0.)
+        for a in (vp, vs):
+            a[sed] = np.polyval(np.polyfit(depth[fit], a[fit], 1), d)
+    else:
+        thick = basin._bilinear(basin.surface, X, Y) - basin._bilinear(basin.bedrock, X, Y)
+        s = 0.5 * (1 + np.tanh((np.clip(depth, 0., 500.) - thick) / cfg.grid.hs[2]))  # InterfaceProblem._blend
+        base, rock = basin.layers[1], basin.layers[2]
+        for a, k in ((vp, "vp"), (vs, "vs")):
+            up = np.where(sed, a, base[k][1])
+            a[...] = up + (rock[k][0] - up) * s
+    lam, mu, _ = e2vp.lame(vp, vs, rho)
+    pb = problem.Problem(cfg, Runner(cfg), dobs, lam, mu, rho, param="lame", pml="follow")
+    J = pb.evaluate(np.zeros(pb.size), "x0", grad=False)[0]
+    m = pb.mask & (depth >= 0.)
+    rms = {k: float(np.sqrt(np.mean((a - a0)[m] ** 2))) for k, a, a0 in (("vp", vp, vp0), ("vs", vs, vs0))}
+    print(f"jswap_{tag}: J = {J:.6e}, change rms over the inverted nodes Vp {rms['vp']:.0f} m/s, Vs {rms['vs']:.0f} m/s")
+    with open(f"{ROOT}/jswap_{tag}.json", "w") as f:
+        json.dump(dict(J=float(J), fmax=args.fmax, swap=args.swap, nsources=args.nsources, rms=rms), f, indent=1)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf", "bedmap", "jmap"))
+    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf", "bedmap", "jmap", "jswap"))
     ap.add_argument("--fmax", type=float, default=0.5)
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
@@ -456,6 +502,7 @@ def main():
     ap.add_argument("--truth", action="store_true",
                     help="bedmap: the depth of the map fitted to the true bedrock (diagnostic, never a start)")
     ap.add_argument("--tag", help="bedmap: written to bedrock_TAG.npz")
+    ap.add_argument("--swap", choices=("vp", "profile", "transition"), help="jswap: the part of --param interface swapped in")
     ap.add_argument("--at", type=float, nargs=2, metavar=("X", "Y"), help="psf: bumps under this surface station")
     ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
     ap.add_argument("--pml", choices=("follow", "copy"), default="follow",
@@ -466,7 +513,7 @@ def main():
     if args.what == "prepare":
         e2vp2.prepare(NPZ)
     else:
-        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf, "bedmap": bedmap, "jmap": jmap}[args.what](args)
+        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf, "bedmap": bedmap, "jmap": jmap, "jswap": jswap}[args.what](args)
 
 
 if __name__ == "__main__":
