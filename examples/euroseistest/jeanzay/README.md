@@ -116,5 +116,14 @@ between) with the map, from the line of the start; `bedmap --from` carries the k
 sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock f1_t24_n40 --param interface-pw --iters 30
 ```
 
+`bedmap --truth --knots` adds the Vs of `interface-pw` at the knots closest to the true sediments: `jmap` on that map
+tells whether the minimum of J of `interface-pw` lies near the true model (its J below that of the inversions) or
+elsewhere (above), whatever the number of iterations:
+
+```bash
+python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --truth --knots --fmax 0.75 --tag truthpw075
+sbatch --nodes=2 --qos=qos_cpu-dev --time=00:30:00 examples/euroseistest/jeanzay/invert.slurm jmap --fmax 0.75 --bedrock truthpw075
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

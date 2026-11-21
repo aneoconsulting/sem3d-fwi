@@ -14,6 +14,7 @@
     python run_e2vp3d.py bedmap --bedrock f1_t24 --mean --tag f1_t24_mean   # bedrock_<tag>.npz, a start for --bedrock <tag>
     python run_e2vp3d.py bedmap --bedrock f1_t24 --truth --fmax 0.75 --tag f1_t24_truth   # the best map of the true bedrock
     python run_e2vp3d.py jmap --fmax 0.75 --bedrock f1_t24_truth   # J of that map
+    python run_e2vp3d.py bedmap --bedrock f1_t24 --truth --knots --fmax 0.75 --tag f1_t24_truthpw   # and the best knots
     python run_e2vp3d.py jswap --fmax 0.5 --swap vp   # J of the true model with one fixed part of --param interface
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
@@ -37,7 +38,8 @@ what the inversion owes to the H/V map); the sediment profile kept, or that of t
 interface-pw inversion. --bedrock <tag> then starts any inversion from it: from the bedrock map of 0.5 Hz to 1 Hz, or
 the velocities (--param vs) after the interface. bedmap --truth: the map closest to the true bedrock in the
 least-squares sense over the inverted nodes of the grid of --fmax (the transition
-of --param interface applied to it), a diagnostic that judges the parametrisation and never starts an inversion.
+of --param interface applied to it), a diagnostic that judges the parametrisation and never starts an inversion; with
+--knots, also the Vs of interface-pw at the knots closest to the true sediments (least squares over their nodes).
 jmap: J of the map of --bedrock, sediments and rock as in --param interface; on a map of bedmap --truth, whether the data prefer
 the true bedrock to the maps the inversion finds (the J of these is in the history of the inversions).
 jswap: J of the true model (0 on the data, an inverse crime) with one fixed part of --param interface swapped in, the
@@ -453,6 +455,11 @@ def bedmap(args):
                                       width=cfg.grid.hs[2] / 2, scale=HSCALE, hmax=500.)
         thick = np.clip(basin._bilinear(basin.surface, X, Y) - basin._bilinear(basin.bedrock, X, Y), 0., None)
         h = pb.interface(pb.fit_interface(thick[pb.mask]))
+        if args.knots:  # the profile of interface-pw closest to the true sediments
+            vs_t = basin.properties(X, Y, Z)[1]
+            sed = (vs_t < 2000.) & pb.mask & (basin.mesh_surface(X, Y) >= Z)
+            b["zk"] = np.array(ZK)
+            b["vsk"] = np.linalg.lstsq(profile_basis(depth[sed], "interface-pw").T, vs_t[sed], rcond=None)[0]
     else:
         assert f"bedrock-{args.bedrock}" in args.src, f"{args.src} is not an inversion from bedrock_{args.bedrock}"
         x = np.load(f"{ROOT}/{args.src}")
@@ -533,6 +540,8 @@ def main():
     ap.add_argument("--mean", action="store_true", help="bedmap: the depth of the map replaced by its mean")
     ap.add_argument("--truth", action="store_true",
                     help="bedmap: the depth of the map fitted to the true bedrock (diagnostic, never a start)")
+    ap.add_argument("--knots", action="store_true",
+                    help="bedmap --truth: also the Vs at the knots ZK fitted to the true sediments (diagnostic)")
     ap.add_argument("--tag", help="bedmap: written to bedrock_TAG.npz")
     ap.add_argument("--swap", choices=("vp", "profile", "transition"), help="jswap: the part of --param interface swapped in")
     ap.add_argument("--at", type=float, nargs=2, metavar=("X", "Y"), help="psf: bumps under this surface station")
