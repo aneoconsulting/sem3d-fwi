@@ -423,6 +423,17 @@ class InterfaceProblem(Problem):
         x[i] = (hb[i] - self.h0.ravel()[i]) / self.scale
         return x, int(moved.sum())
 
+    def fit_interface(self, h):
+        """x whose interface is closest to the depth h given on the inverted nodes, in the least-squares sense over
+        those nodes (normal equations of the bilinear map), clipped to 0 <= h <= hmax; p at p0."""
+        A, b = np.zeros((self.n, self.n)), np.zeros(self.n)
+        for i in range(4):
+            for j in range(4):
+                np.add.at(A, (self.idx[:, i], self.idx[:, j]), self.w[:, i] * self.w[:, j])
+            np.add.at(b, self.idx[:, i], self.w[:, i] * h)
+        hn = np.clip(np.linalg.lstsq(A, b, rcond=None)[0], 0., self.hmax)
+        return np.concatenate([(hn - self.h0.ravel()) / self.scale, np.zeros(self.k)])
+
     def chain(self, x, gl, gm):
         s, ds = self._blend(x)
         up, dup = self._up(x)

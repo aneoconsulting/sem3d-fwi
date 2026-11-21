@@ -12,6 +12,8 @@
     python run_e2vp3d.py psf --bedrock f1_t24 --at 500 -500   # ... under the station (500, -500)
     python run_e2vp3d.py bedmap --bedrock f1_t24 --from invert_f0.5_s3_interface_z4_bedrock-f1_t24/x010.npy --tag f1_t24_if05
     python run_e2vp3d.py bedmap --bedrock f1_t24 --mean --tag f1_t24_mean   # bedrock_<tag>.npz, a start for --bedrock <tag>
+    python run_e2vp3d.py bedmap --bedrock f1_t24 --truth --fmax 0.75 --tag f1_t24_truth   # the best map of the true bedrock
+    python run_e2vp3d.py jmap --fmax 0.75 --bedrock f1_t24_truth   # J of that map
 
 forward: one simulation, traces and timing saved in forward_f<fmax>[_t<time>][_flat][_rock].npz. site: ratio of the
 mean horizontal amplitude spectra of the basin to those of the rock reference at each station, and the
@@ -30,7 +32,11 @@ resolution there, its part in the other parameter the K-G crosstalk; psf_<tag>.n
 bedmap: a new bedrock map from that of --bedrock, its depth replaced by the map of an interface inversion (--from, an
 iterate x###.npy of its work directory, relative to $SEMFWI_RUNS/e2vp3d), or by its mean (--mean: a flat bedrock, to see
 what the inversion owes to the H/V map); the profile v0 + g depth kept. --bedrock <tag> then starts any inversion from
-it: from the bedrock map of 0.5 Hz to 1 Hz, or the velocities (--param vs) after the interface.
+it: from the bedrock map of 0.5 Hz to 1 Hz, or the velocities (--param vs) after the interface. bedmap --truth: the map
+closest to the true bedrock in the least-squares sense over the inverted nodes of the grid of --fmax (the transition
+of --param interface applied to it), a diagnostic that judges the parametrisation and never starts an inversion.
+jmap: J of the map of --bedrock, sediments and rock as in --param interface; on a map of bedmap --truth, whether the data prefer
+the true bedrock to the maps the inversion finds (the J of these is in the history of the inversions).
 --nprocs: MPI ranks of every simulation (default 4); other than 4, it is part of the names of forward and bedrock
 files (forward_f2_t24_n160.npz), and of the inversion's data and work directories.
 """
@@ -401,6 +407,15 @@ def bedmap(args):
     b = dict(np.load(f"{ROOT}/bedrock_{args.bedrock}.npz"))
     if args.mean:
         h = np.full_like(b["h"], b["h"].mean())
+    elif args.truth:
+        cfg, basin = e2vp2.config_3d(f"{ROOT}/bedmap_truth_f{args.fmax:g}", NPZ, fmax=args.fmax, nsources=args.nsources)
+        X, Y, Z = cfg.grid.mesh()
+        lam0, mu0, rho = start_model(cfg, basin, f"{ROOT}/bedrock_{args.bedrock}.npz")
+        up, down, depth = layers(cfg, basin, b)
+        pb = problem.InterfaceProblem(cfg, None, None, (b["x"], b["y"]), b["h"], up, down, depth, rho, (lam0, mu0),
+                                      width=cfg.grid.hs[2] / 2, scale=HSCALE, hmax=500.)
+        thick = np.clip(basin._bilinear(basin.surface, X, Y) - basin._bilinear(basin.bedrock, X, Y), 0., None)
+        h = pb.interface(pb.fit_interface(thick[pb.mask]))
     else:
         assert f"bedrock-{args.bedrock}" in args.src, f"{args.src} is not an inversion from bedrock_{args.bedrock}"
         x = np.load(f"{ROOT}/{args.src}")
@@ -412,9 +427,21 @@ def bedmap(args):
     np.savez(f"{ROOT}/bedrock_{args.tag}.npz", **{**b, "h": h})
 
 
+def jmap(args):
+    """J of the bedrock map of --bedrock, sediments and rock as at the start of --param interface (x = 0): one forward
+    per source, no gradient; jmap_<tag>.json."""
+    args.param = "interface"
+    tag = f"f{args.fmax:g}_bedrock-{args.bedrock}" + ("" if args.nprocs == 4 else f"_n{args.nprocs}")
+    pb, _, _ = make_problem(args, f"{ROOT}/jmap_{tag}")
+    J = pb.evaluate(np.zeros(pb.size), "x0", grad=False)[0]
+    print(f"jmap_{tag}: J = {J:.6e}")
+    with open(f"{ROOT}/jmap_{tag}.json", "w") as f:
+        json.dump(dict(J=float(J), fmax=args.fmax, bedrock=args.bedrock, nsources=args.nsources), f, indent=1)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf", "bedmap"))
+    ap.add_argument("what", choices=("prepare", "forward", "site", "bedrock", "gradcheck", "invert", "psf", "bedmap", "jmap"))
     ap.add_argument("--fmax", type=float, default=0.5)
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
@@ -426,6 +453,8 @@ def main():
     ap.add_argument("--bedrock", metavar="TAG", help="invert, gradcheck: start from bedrock_TAG.npz (bedrock command)")
     ap.add_argument("--from", dest="src", metavar="X_NPY", help="bedmap: iterate of an interface inversion")
     ap.add_argument("--mean", action="store_true", help="bedmap: the depth of the map replaced by its mean")
+    ap.add_argument("--truth", action="store_true",
+                    help="bedmap: the depth of the map fitted to the true bedrock (diagnostic, never a start)")
     ap.add_argument("--tag", help="bedmap: written to bedrock_TAG.npz")
     ap.add_argument("--at", type=float, nargs=2, metavar=("X", "Y"), help="psf: bumps under this surface station")
     ap.add_argument("--nprocs", type=int, default=4, help="MPI ranks of each simulation")
@@ -437,7 +466,7 @@ def main():
     if args.what == "prepare":
         e2vp2.prepare(NPZ)
     else:
-        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf, "bedmap": bedmap}[args.what](args)
+        {"forward": forward, "site": site, "bedrock": bedrock, "gradcheck": gradcheck, "invert": invert, "psf": psf, "bedmap": bedmap, "jmap": jmap}[args.what](args)
 
 
 if __name__ == "__main__":

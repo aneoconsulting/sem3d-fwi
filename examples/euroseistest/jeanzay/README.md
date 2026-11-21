@@ -89,5 +89,15 @@ sbatch --nodes=2 --qos=qos_cpu-dev --time=01:00:00 examples/euroseistest/jeanzay
 sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock if05 --param interface-v0g --iters 30
 ```
 
+`jmap` gives J of the map of `--bedrock` (one forward per source, a few minutes in QoS dev). `bedmap --truth` writes the
+map closest to the true bedrock on the grid of `--fmax`, a diagnostic that only judges the parametrisation: if its J
+is above that of the inverted maps (in the history of the inversions), the data prefer a wrong map, and the fixed
+part of the model (the sediment profile, the transition) is to blame rather than the inversion:
+
+```bash
+python run_e2vp3d.py bedmap --bedrock f1_t24_n40 --truth --fmax 0.75 --tag truth075
+sbatch --nodes=2 --qos=qos_cpu-dev --time=00:30:00 examples/euroseistest/jeanzay/invert.slurm jmap --fmax 0.75 --bedrock truth075
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

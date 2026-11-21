@@ -579,6 +579,16 @@ def test_interface_bound():
     assert np.array_equal(xb[2:], x[2:])
 
 
+def test_interface_fit():
+    """InterfaceProblem.fit_interface: the depth of a map, interpolated on the inverted nodes, gives that map back;
+    a depth beyond the bounds is clipped."""
+    pb = _interface_problem()
+    x = 0.1 * RNG.standard_normal(pb.size)
+    h = np.sum(pb.w * pb.interface(x).ravel()[pb.idx], axis=1)
+    assert np.allclose(pb.fit_interface(h), x, atol=1e-10)
+    assert np.allclose(pb.interface(pb.fit_interface(h + 1000.)), 400.)
+
+
 def test_bound():
     """Problem.bound: mu >= 0.2 mu_ref, then lambda + 2 mu / 3 >= 0.2 (lambda_ref + 2 mu_ref / 3); the
     other nodes and a model within the bounds are left unchanged."""
