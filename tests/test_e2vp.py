@@ -94,3 +94,18 @@ def test_e2vp2_basin(tmp_path):
     st = np.array(cfg.stations)
     assert np.allclose(st[:-3, 2], [b.mesh_surface(x, y) for x, y in st[:-3, :2]])
     assert np.isclose(cfg.sources[0].coords[2], e2vp2.read_source()["z"] - b.z0)
+
+
+def test_profile_basis():
+    """Sediment Vs of interface-pw: the hat functions of the knots sum to 1 and interpolate linearly between them; the
+    knots of v0 + g depth give back that line down to the last knot, and their basis that of interface-v0g."""
+    import run_e2vp3d as r
+    depth = np.linspace(0., 500., 101)
+    phi = r.profile_basis(depth, "interface-pw")
+    assert phi.shape == (len(r.ZK), depth.size) and np.allclose(phi.sum(axis=0), 1.)
+    p = np.array([150., 260., 330., 470., 600., 900.])
+    assert np.allclose(p @ phi, np.interp(depth, r.ZK, p))
+    k = r.knots(dict(v0=np.array(300.), g=np.array(1.25)))
+    assert np.allclose(k @ phi, 300. + 1.25 * depth)
+    assert np.allclose(np.array([300., 1.25]) @ r.profile_basis(depth, "interface-v0g"), 300. + 1.25 * depth)
+    assert np.array_equal(r.knots(dict(zk=np.array(r.ZK), vsk=p)), p)

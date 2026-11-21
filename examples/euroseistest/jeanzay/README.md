@@ -108,5 +108,13 @@ the one that makes the data prefer a wrong map:
 sbatch --nodes=2 --qos=qos_cpu-dev --time=00:30:00 examples/euroseistest/jeanzay/invert.slurm jswap --fmax 0.75 --swap vp
 ```
 
+At 0.5, 0.75 and 1 Hz, the one-line sediment profile is what keeps the true bedrock above the inverted maps (`jswap
+--swap profile`); `--param interface-pw` inverts the Vs of the sediments at 0, 50, 100, 200, 300 and 500 m (linear in
+between) with the map, from the line of the start; `bedmap --from` carries the knots on:
+
+```bash
+sbatch --nodes=2 examples/euroseistest/jeanzay/invert.slurm invert --fmax 0.5 --bedrock f1_t24_n40 --param interface-pw --iters 30
+```
+
 An inversion stopped by the time limit resumes from its last iteration when submitted again with the same arguments
 and the same number of tasks (the ranks are part of the names of its data and work directories).

@@ -7,7 +7,7 @@
     python run_e2vp3d.py site [--fmax 0.5]        # basin response from forward, against the 1-D column
     python run_e2vp3d.py bedrock --fmax 1 --time 24   # sediment thickness from H/V and the vertical array of that forward
     python run_e2vp3d.py gradcheck [--fmax 0.5]   # adjoint gradient against finite differences, (K, G)
-    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs|interface|interface-v0g]   # the first 500 m, from a 1-D start
+    python run_e2vp3d.py invert [--iters 10] [--nsources 3] [--bedrock f1_t24] [--param vs|interface|interface-v0g|interface-pw]   # the first 500 m, from a 1-D start
     python run_e2vp3d.py psf --bedrock f1_t24     # point-spread functions of K and G at 100 and 300 m depth
     python run_e2vp3d.py psf --bedrock f1_t24 --at 500 -500   # ... under the station (500, -500)
     python run_e2vp3d.py bedmap --bedrock f1_t24 --from invert_f0.5_s3_interface_z4_bedrock-f1_t24/x010.npy --tag f1_t24_if05
@@ -25,16 +25,18 @@ down to the thickness map of bedrock, estimated from the data (see start_model a
 directions vary linearly in z between every ZSTEP-th level of the grid (_z4 in the work directory).
 --param: kg (K and G, default), vs (Vs alone, Vp / Vs of the start kept at each node, problem.Problem) or interface
 (with --bedrock: the depth of the bedrock on the 11 x 11 map of the start, sediments and rock of the start above and
-below it, problem.InterfaceProblem), or interface-v0g (the same, and v0 and g of the sediment profile above it).
+below it, problem.InterfaceProblem), or interface-v0g (the same, and v0 and g of the sediment profile above it), or
+interface-pw (the same, and the Vs of the sediments at the depths ZK, linear in between: a profile richer than one line).
 psf: Hessian-vector products at the start for Gaussian bumps of K and G (standard deviation 100 m) at 100 and 300 m
 below the surface, where the true sediments are thickest or under the station --at (semfwi.hessian; point-spread
 functions as in Fichtner & Trampert 2011): the spread of the response is the
 resolution there, its part in the other parameter the K-G crosstalk; psf_<tag>.npz and .json.
 bedmap: a new bedrock map from that of --bedrock, its depth replaced by the map of an interface inversion (--from, an
 iterate x###.npy of its work directory, relative to $SEMFWI_RUNS/e2vp3d), or by its mean (--mean: a flat bedrock, to see
-what the inversion owes to the H/V map); the profile v0 + g depth kept. --bedrock <tag> then starts any inversion from
-it: from the bedrock map of 0.5 Hz to 1 Hz, or the velocities (--param vs) after the interface. bedmap --truth: the map
-closest to the true bedrock in the least-squares sense over the inverted nodes of the grid of --fmax (the transition
+what the inversion owes to the H/V map); the sediment profile kept, or that of the iterate of an interface-v0g or
+interface-pw inversion. --bedrock <tag> then starts any inversion from it: from the bedrock map of 0.5 Hz to 1 Hz, or
+the velocities (--param vs) after the interface. bedmap --truth: the map closest to the true bedrock in the
+least-squares sense over the inverted nodes of the grid of --fmax (the transition
 of --param interface applied to it), a diagnostic that judges the parametrisation and never starts an inversion.
 jmap: J of the map of --bedrock, sediments and rock as in --param interface; on a map of bedmap --truth, whether the data prefer
 the true bedrock to the maps the inversion finds (the J of these is in the history of the inversions).
@@ -64,6 +66,8 @@ from semfwi.runner import Runner  # noqa: E402
 ZSTEP = 4
 HSCALE = 100.  # m of bedrock depth per unit of x (InterfaceProblem scale)
 PSCALE = (100., 0.5)  # interface-v0g: m/s of v0 and 1/s of g per unit of x (100 m/s of Vs at 200 m)
+ZK = (0., 50., 100., 200., 300., 500.)  # interface-pw: depths of the knots of the sediment Vs, linear in between
+PWSCALE = 100.  # interface-pw: m/s of Vs at a knot per unit of x
 ROOT = os.path.join(RUNS_DIR, "e2vp3d")
 NPZ = os.path.join(ROOT, "basin.npz")
 
@@ -96,28 +100,46 @@ def start_model(cfg, basin, bedrock=None):
     return np.where(sed, ls, lr), np.where(sed, ms, mr), rho
 
 
+def knots(b):
+    """Vs of the sediments of the bedrock map b at the knots ZK: its own (vsk, from an interface-pw inversion), or those
+    of v0 + g depth."""
+    if "vsk" in b:
+        assert np.allclose(b["zk"], ZK), (b["zk"], ZK)
+        return np.asarray(b["vsk"], float)
+    return float(b["v0"]) + float(b["g"]) * np.array(ZK)
+
+
+def profile_basis(depth, param):
+    """phi (k, ...) with the sediment Vs = sum_k p_k phi_k(depth): (1, depth) for interface-v0g, the hat functions of
+    the knots ZK for interface-pw (Vs piecewise linear in depth, p its values at the knots)."""
+    if param == "interface-v0g":
+        return np.stack([np.ones_like(depth), depth])
+    return np.stack([np.interp(depth, ZK, e) for e in np.eye(len(ZK))])
+
+
 def layers(cfg, basin, b):
-    """(lambda, mu) of the sediments of the bedrock map b (Vs = v0 + g depth, Vp = 1600 m/s + 1.5 Vs) and of the first
-    crustal layer, at every node of the grid, and the depth below the meshed surface, clipped to [0, 500] m."""
+    """(lambda, mu) of the sediments of the bedrock map b (Vs = v0 + g depth, or piecewise linear through knots(b) for
+    a map of an interface-pw inversion; Vp = 1600 m/s + 1.5 Vs) and of the first crustal layer, at every node of the
+    grid, and the depth below the meshed surface, clipped to [0, 500] m."""
     X, Y, Z = cfg.grid.mesh()
     depth = np.clip(basin.mesh_surface(X, Y) - Z, 0., 500.)
     rho = basin.properties(X, Y, Z)[2]
-    vs = b["v0"] + b["g"] * depth
+    vs = np.interp(depth, ZK, knots(b)) if "vsk" in b else b["v0"] + b["g"] * depth
     rock = basin.layers[2]
     return (e2vp.lame(1600. + 1.5 * vs, vs, rho)[:2], e2vp.lame(np.full_like(vs, rock["vp"][0]), np.full_like(vs, rock["vs"][0]), rho)[:2],
             depth)
 
 
-def sediment_profile(cfg, basin):
-    """f(p) of InterfaceProblem: (lambda, mu) of the sediments Vs = v0 + g depth, Vp = 1600 m/s + 1.5 Vs, on the grid,
-    and their derivatives in p = (v0, g)."""
+def sediment_profile(cfg, basin, param):
+    """f(p) of InterfaceProblem: (lambda, mu) of the sediments Vs = sum_k p_k phi_k(depth) (profile_basis: v0 + g depth,
+    or piecewise linear through the knots ZK), Vp = 1600 m/s + 1.5 Vs, on the grid, and their derivatives in p."""
     X, Y, Z = cfg.grid.mesh()
     depth = np.clip(basin.mesh_surface(X, Y) - Z, 0., 500.)
     rho = basin.properties(X, Y, Z)[2]
-    dvs = np.stack([np.ones_like(depth), depth])
+    dvs = profile_basis(depth, param)
 
     def f(p):
-        vs = p[0] + p[1] * depth
+        vs = np.tensordot(p, dvs, 1)
         vp = 1600. + 1.5 * vs
         return rho * (vp ** 2 - 2 * vs ** 2), rho * vs ** 2, rho * (3 * vp - 4 * vs) * dvs, 2 * rho * vs * dvs
     return f
@@ -293,7 +315,12 @@ def make_problem(args, work):
         assert args.bedrock, "--param interface moves the bedrock map of --bedrock"
         b = np.load(f"{ROOT}/bedrock_{args.bedrock}.npz")
         up, down, depth = layers(cfg, basin, b)
-        prof = (sediment_profile(cfg, basin), (float(b["v0"]), float(b["g"])), PSCALE) if args.param == "interface-v0g" else None
+        prof = None
+        if args.param == "interface-v0g":
+            assert "vsk" not in b, "interface-v0g starts from a linear profile"
+            prof = (sediment_profile(cfg, basin, args.param), (float(b["v0"]), float(b["g"])), PSCALE)
+        elif args.param == "interface-pw":
+            prof = (sediment_profile(cfg, basin, args.param), knots(b), (PWSCALE,) * len(ZK))
         pb = problem.InterfaceProblem(cfg, Runner(cfg), dobs, (b["x"], b["y"]), b["h"], up, down, depth, rho, (lam0, mu0),
                                       width=cfg.grid.hs[2] / 2, scale=HSCALE, hmax=500., pml="follow", profile=prof)
         return pb, (lam_t, mu_t), basin
@@ -306,7 +333,7 @@ def gradcheck(args):
     """Directional derivative along a smooth bump of K (block a) then G (block b), 60 m below the surface
     at (500, -500) m: g . dx against (J(x + h dx) - J(x)) / h, and the centered difference for each h given with -h. --param interface: a bump of the bedrock depth
     on its map, centred at the same point (h = 1e-2: 1 m deeper at its centre); interface-v0g: then v0 alone (h = 1e-2:
-    1 m/s) and g alone (5e-3 /s)."""
+    1 m/s) and g alone (5e-3 /s); interface-pw: then the Vs of each knot alone (h = 1e-2: 1 m/s)."""
     tag = f"f{args.fmax:g}" + ("" if args.param == "kg" else f"_{args.param}") + (f"_bedrock-{args.bedrock}" if args.bedrock else "")
     pb, _, basin = make_problem(args, f"{ROOT}/gradcheck_{tag}")
     x = np.zeros(pb.size)
@@ -317,7 +344,8 @@ def gradcheck(args):
         X, Y = (c.ravel() for c in np.meshgrid(b["x"], b["y"]))  # map nodes, h[iy, ix]
         bump = np.exp(-((X - 500.) ** 2 + (Y + 500.) ** 2) / (2 * 600. ** 2))
         dirs.append(("h", np.r_[bump, np.zeros(pb.k)]))
-        dirs += [(k, np.eye(pb.size)[pb.n + i]) for i, k in enumerate(("v0", "g")[:pb.k])]  # InterfaceProblem.params
+        names = ("v0", "g") if args.param == "interface-v0g" else tuple(f"vs{z:g}" for z in ZK)
+        dirs += [(k, np.eye(pb.size)[pb.n + i]) for i, k in enumerate(names[:pb.k])]  # InterfaceProblem.params
     else:
         X, Y, Z = (c[pb.mask] for c in pb.cfg.grid.mesh())
         depth = basin.mesh_surface(X, Y) - Z
@@ -431,8 +459,12 @@ def bedmap(args):
         h = b["h"] + HSCALE * x[:b["h"].size].reshape(b["h"].shape)  # InterfaceProblem.interface
         if x.size == b["h"].size + 2:  # interface-v0g: InterfaceProblem.params
             b["v0"], b["g"] = b["v0"] + PSCALE[0] * x[-2], b["g"] + PSCALE[1] * x[-1]
-    print(f"bedrock_{args.tag}: depth {h.min():.0f} to {h.max():.0f} m, mean {h.mean():.0f} m, v0 {float(b['v0']):.0f} m/s, "
-          f"g {float(b['g']):.3f} /s (bedrock_{args.bedrock}: {b['h'].min():.0f} to {b['h'].max():.0f}, mean {b['h'].mean():.0f})")
+        elif x.size == b["h"].size + len(ZK):  # interface-pw
+            b["zk"], b["vsk"] = np.array(ZK), knots(b) + PWSCALE * x[-len(ZK):]
+    prof = (f"Vs {np.round(b['vsk']).astype(int).tolist()} m/s at {list(ZK)} m" if "vsk" in b
+            else f"v0 {float(b['v0']):.0f} m/s, g {float(b['g']):.3f} /s")
+    print(f"bedrock_{args.tag}: depth {h.min():.0f} to {h.max():.0f} m, mean {h.mean():.0f} m, {prof}"
+          f" (bedrock_{args.bedrock}: {b['h'].min():.0f} to {b['h'].max():.0f}, mean {b['h'].mean():.0f})")
     np.savez(f"{ROOT}/bedrock_{args.tag}.npz", **{**b, "h": h})
 
 
@@ -492,7 +524,7 @@ def main():
     ap.add_argument("--flat", action="store_true", help="forward: flat free surface")
     ap.add_argument("--rock", action="store_true", help="forward: sediments replaced by rock")
     ap.add_argument("--time", type=float, default=None, help="forward, site: simulated time (s), default 3 / fmax + 6")
-    ap.add_argument("--param", choices=("lame", "kg", "vs", "interface", "interface-v0g"), default="kg")
+    ap.add_argument("--param", choices=("lame", "kg", "vs", "interface", "interface-v0g", "interface-pw"), default="kg")
     ap.add_argument("--h", type=float, nargs="+", default=[1e-2, 1e-3])
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--nsources", type=int, default=3)
